@@ -33,7 +33,7 @@ Research date: 2026-09-13. External projects change quickly; re-check versions b
 - Commit history observed through 2026-09-10; `a33de92` is shown as the latest commit on that date in the GitHub history view.
 - Generic depth example: https://github.com/crosire/reshade/blob/main/examples/09-depth/generic_depth_addon.cpp
 - API device definitions: https://github.com/crosire/reshade/blob/main/include/reshade_api_device.hpp
-- License: BSD-3-Clause OR MIT for API headers/source portions as declared in files; verify exact file/component before redistribution.
+- Primary project license: BSD-3-Clause. Public API headers such as `reshade.hpp` and `reshade_api.hpp` declare BSD-3-Clause OR MIT. Verify the exact file/component before reuse or redistribution.
 
 ## NVIDIA Streamline / DLSS
 
@@ -54,6 +54,9 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 - Current SDK observed: FSR SDK `2.3.0` ("Redstone").
 - FSR API documentation: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/main/Kits/FidelityFX/docs/getting-started/ffx-api.md
 - Current FSR API is a five-function ABI delivered through provided signed DLLs; its backend-specific functionality is documented as currently DirectX 12. Exact x86 binary support remains to be verified from release artifacts rather than assumed.
+- Current signed-binary directory: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/main/Kits/FidelityFX/signedbin
+- Primary SDK license: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/main/docs/license.md
+- Licensing note: the current license permits redistribution of covered software in binary form subject to notices/terms and prohibits reverse engineering/decompilation/disassembly. Source-file exceptions are enumerated separately and must be checked file-by-file if reused.
 
 ## Intel XeSS
 
@@ -63,6 +66,7 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 - Current release observed: XeSS SDK `v3.0.2`, short commit `8fe81bd`, released 2026-07-24.
 - The SR developer guide requires Windows 10/11 x64. D3D12 is cross-vendor with the documented feature requirements; the D3D11 SR implementation is currently limited to Intel Arc or later.
 - XeSS 3.0.0 introduced external-memory-heap support for sharing GPU memory with other engine components. Current XeSS-SR D3D12 documentation also allows application-provided temporary heaps/descriptors. These are relevant architectural evidence, not proof that XeSS itself solves LTR Bridge's cross-process transport.
+- Primary SDK license: https://github.com/intel/xess/blob/main/LICENSE.txt — Intel Simplified Software License (Version October 2022). It permits redistribution of the binary software without modification subject to reproducing notices/terms, prohibits endorsement using Intel/supplier names without permission, and prohibits reverse engineering/decompilation/disassembly or modification. Third-party components have separate notices.
 
 ## Microsoft graphics interop documentation
 
