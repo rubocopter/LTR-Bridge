@@ -17,9 +17,13 @@ Core files now present:
 - `docs/TEMPORAL_CONTRACT.md`
 - `docs/X86_X64_BRIDGE.md`
 - `docs/VR.md`
+- `docs/D3D8.md`
 - `docs/D3D9.md`
 - `docs/D3D10.md`
 - `docs/MOTION_VECTORS.md`
+- `docs/DEPTH.md`
+- `docs/JITTER.md`
+- `docs/CASE_STUDY_BIOSHOCK_VR.md`
 - `docs/REFERENCES.md`
 
 ## Strongest first-pass findings
@@ -48,25 +52,40 @@ Core files now present:
 12. ReShade's current D3D8 setup path points users to BSD-2-Clause `d3d8to9`. D3D8 should eventually compare native interception, d3d8to9->D3D9 and dgVoodoo2->D3D11/12 on the same target.
 13. Feeder's synthetic post-process jitter experiment is useful negative evidence: shifting a downsample grid after rendering is not projection jitter and cannot provide real SR semantics or game-side performance gain.
 
+## BioShock VR case-study findings
+
+Pinned upstream: `Beren5556/BioShock-VR-DLSS-DLAA` release `v0.2.17-en`, source commit `8671fc87c4646140419ea64bd6e60d59fcac4723`. Full analysis is in `docs/CASE_STUDY_BIOSHOCK_VR.md`.
+
+1. **Observed upstream:** BioShock Remastered is a real D3D11/x86 integration with separate x64 NGX helpers and fully independent per-eye pipes, resources, fences and histories. This strongly supports the current layered architecture and proves that view identity must survive through transport/backend execution.
+2. **Verified from source:** BioShock 1 and BioShock 2 share backend-facing temporal types but implement independent game-specific camera/projection/depth providers. This is concrete evidence for keeping reusable mechanisms separate from per-game profiles/providers.
+3. **Verified from source:** the current motion vectors are reconstructed from hardware depth plus current/previous camera state and use current-pixel -> previous-pixel, render-pixel units. They are camera-only; moving hands/weapons/enemies/particles/water do not have object vectors.
+4. **Verified limitation:** BioShock 2 sends zero projection jitter for DLAA and SR and explicitly documents this as a temporal-quality limitation, especially for SR. Successful NGX evaluation therefore demonstrates a functioning partial temporal contract, not renderer-native/full-quality SR semantics.
+5. **Verified/observed upstream:** BioShock 2 uses exact eye/build camera/projection identity, explicit reject reasons and aggressive history resets rather than a "latest camera" fallback. These diagnostics should influence LTR Bridge's controlled contract/harness.
+6. **Verified:** upstream includes a game-independent synthetic x86 D3D11 -> two x64 host stereo test with deterministic per-eye readback and cross-eye contamination checks. LTR Bridge's planned x86/x64 probe should adopt those validation ideas without copying BioShock's IPC ABI.
+7. **Observed upstream with qualification:** documented BS2 runs execute real NGX DLAA and multiple SR resolutions for thousands of frames through two eye hosts and an OpenXR simulator, but upstream explicitly does not claim final physical-headset image quality, complete object motion, sustained 90 Hz or a clean shutdown for those runs.
+8. **Verified licensing/provenance:** the repository is MIT; its x64 host derives from DLSS5-Feeder/NIGos dlss5-bridge and keeps NVIDIA NGX under separate NVIDIA terms.
+
 ## Candidate architecture
 
 `Legacy API Adapter -> Temporal Data Provider -> optional Transport -> Modern Graphics Host -> Reconstruction Backend -> game/VR output`
 
-Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement.
+Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement. The BioShock case study independently strengthens the separation between shared semantic/transport/backend mechanisms and game-specific temporal providers.
 
 ## Next concrete work
 
 1. Re-inspect repository state and this handoff.
-2. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
-3. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
-4. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes.
-5. Add diagnostic visualizations for the exact depth resource/convention, motion direction/scale/confidence/validity and history reset. Include an optical-flow baseline beside ground-truth/renderer-derived motion so quality loss is measurable rather than anecdotal.
-6. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe.
-7. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
-8. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.
+2. Before implementing the D3D11 harness, mine the BioShock case study only for reusable validation ideas: exact frame/build identity, explicit reject reasons, camera+depth baseline motion, per-eye history isolation, deterministic stereo contamination tests and bounded helper failure/recovery. Do not import BioShock addresses/hooks or freeze its IPC ABI.
+3. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
+4. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
+5. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes. Include camera+depth reconstruction as an intermediate baseline, not only native ground truth and optical flow.
+6. Add diagnostic visualizations for the exact depth resource/convention, motion direction/scale/confidence/validity and history reset. Include an optical-flow baseline beside ground-truth/renderer-derived motion so quality loss is measurable rather than anecdotal.
+7. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe. From the first stereo-capable version, include two independent streams, distinct histories/resources, deterministic readback and cross-eye contamination detection.
+8. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
+9. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.
 
 ## Important upstream snapshot
 
+- BioShock VR DLSS/DLAA case study: `v0.2.17-en` / `8671fc87c4646140419ea64bd6e60d59fcac4723`.
 - DLSS5-Feeder stable observed: `v0.15.1` / `3f62485`.
 - DLSS5-Feeder newest prerelease observed: `v1.16.0-beta.1` / `55c5bca`.
 - OptiScaler stable observed: `v0.9.4` / `7534ad0`.
@@ -77,9 +96,9 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 ## Repository publication
 
 - `origin` is `https://github.com/rubocopter/LTR-Bridge.git` on `main`.
-- The initial bootstrap and this second research pass are published to GitHub.
-- During the second research pass, shell Git commands were blocked by the execution environment. The workspace files were patched to mirror the documentation changes and GitHub was updated through the repository integration. The next agent must inspect/synchronize the local checkout before relying on local Git status.
+- The research/bootstrap, second research pass and BioShock VR case study are published to GitHub.
+- At the start of the BioShock investigation, the local checkout at `E:\LTR_bridge` was still on `e561885` and 24 commits behind `origin/main`, with the earlier research files locally modified/untracked. Do not rely on local Git status until it is deliberately synchronized/reconciled; the BioShock case-study commits in this pass were written to remote `main` through the repository integration.
 
 ## Do not do next
 
-Do not begin a production injector, do not modify existing game-mod repositories, and do not freeze a public universal temporal ABI before at least DLSS/DLAA, FidelityFX and XeSS mappings plus one x86 transport and one legacy API experiment have informed it.
+Do not begin a production injector, do not modify existing game-mod repositories, and do not freeze a public universal temporal ABI before at least DLSS/DLAA, FidelityFX and XeSS mappings plus one x86 transport and one legacy API experiment have informed it. Do not treat BioShock's D3D11/game-specific provider as evidence that D3D8/9/10 or another engine can use the same hooks or transport unchanged.
