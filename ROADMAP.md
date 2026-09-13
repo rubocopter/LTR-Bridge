@@ -19,6 +19,7 @@ Status: **implemented (documentation), not experimentally validated**.
 - [x] Record current D3D8 routes: native interception, `d3d8to9` -> D3D9 and dgVoodoo2 -> D3D11/12.
 - [x] Record concrete depth-access behavior from ReShade across D3D9/10/11 and current optical-flow/MV-provider limitations.
 - [x] Separate real renderer projection jitter from post-process/synthetic sampling jitter.
+- [x] Record complementary real-game case studies: BioShock for x86/x64 stereo transport and strict temporal identity; Rogue Trader for renderer-native internal resolution, jitter and camera/object MV integration.
 - [ ] Pin additional upstream source commits where conclusions currently rely on moving `main` branches.
 - [x] Review current primary distribution/license texts for AMD FidelityFX signed SDK binaries, Intel XeSS SDK, and ReShade/API headers.
 - [ ] Re-check the exact backend binaries, source files and third-party notices selected for packaging immediately before any release.
@@ -32,11 +33,12 @@ Goal: prove temporal correctness without legacy transport complexity.
 Success criteria:
 
 - controlled color, depth, motion vectors, and projection jitter;
-- compare renderer-native/ground-truth motion against an image-space optical-flow baseline and preserve confidence/validity diagnostics;
+- compare renderer-native/ground-truth motion against camera+depth reconstruction and an image-space optical-flow baseline; preserve coverage/exclusion and confidence/validity diagnostics;
 - explicit history reset;
 - 1:1 native-resolution temporal AA path first;
+- validate jitter semantics at native AA and at multiple sub-native SR ratios;
 - debug views that validate depth/MV direction and scale;
-- visual validation on static camera, translation, rotation, animated geometry, particles, HUD, resize, and history reset;
+- visual validation on static camera, translation, rotation, animated geometry, cloth/skinned geometry, particles, HUD/highlights, resize, and history reset;
 - frame-time and VRAM measurements.
 
 Decision gate: only proceed to legacy integration after the contract can be validated independently of a game.
@@ -64,6 +66,8 @@ Measure copies, stalls, queue waits, resize, process failure, adapter identity, 
 Status: **planned**.
 
 Run the controlled contract through at least DLAA/DLSS-compatible integration, FidelityFX temporal upscaling, and XeSS Native AA/SR where the available SDK/API path permits it. Document non-common inputs instead of hiding them.
+
+For real SR, also validate insertion point and renderer-resolution side effects separately from backend correctness: post-processing resolution, screen-space particles/billboards, mip bias and any secondary-camera/pass assumptions must not silently inherit display-resolution semantics.
 
 ## Phase 4 — D3D10 probe
 

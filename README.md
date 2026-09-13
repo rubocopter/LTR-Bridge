@@ -35,6 +35,8 @@ This order is a research hypothesis, not a permanent product architecture.
 - [docs/MOTION_VECTORS.md](docs/MOTION_VECTORS.md) — motion-vector strategies and gaps.
 - [docs/DEPTH.md](docs/DEPTH.md) — depth discovery, preservation and semantic requirements.
 - [docs/JITTER.md](docs/JITTER.md) — projection-jitter requirements and legacy injection constraints.
+- [docs/CASE_STUDY_BIOSHOCK_VR.md](docs/CASE_STUDY_BIOSHOCK_VR.md) — x86/x64 stereo transport and game-specific temporal-provider case study.
+- [docs/CASE_STUDY_ROGUE_TRADER_DLSS.md](docs/CASE_STUDY_ROGUE_TRADER_DLSS.md) — renderer-native resolution/jitter/MV integration case study.
 - [docs/REFERENCES.md](docs/REFERENCES.md) — research snapshot and source versions.
 
 ## Validation vocabulary

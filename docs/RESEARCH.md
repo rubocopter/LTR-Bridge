@@ -177,6 +177,20 @@ Research target: Intel XeSS SDK `v3.0.2`, short commit `8fe81bd`, released 2026-
 
 **Conclusion:** real SR requires projection jitter to enter before scene rasterization. A post-process sampling offset must have distinct provenance and must never be advertised as equivalent to game-render jitter. The likely legacy integration point is the projection matrix/fixed-function transform or vertex-shader camera constants, with draw classification needed to avoid jittering HUD and unrelated projections.
 
+## Real-game temporal case studies: complementary evidence
+
+Two current real-game implementations now provide useful opposite reference points.
+
+**BioShock VR (`Beren5556/BioShock-VR-DLSS-DLAA@8671fc87...`):** D3D11/x86, explicit x64 per-eye helpers, strict eye/frame/build identity, aggressive rejection/reset diagnostics, and camera+depth reconstructed motion. Current limitations include camera-only motion and zero renderer jitter. This is especially strong evidence for transport/view isolation and temporal-coherence validation.
+
+**Rogue Trader EnhancedGraphics (`BradyBrenot/RogueTrader_DLSS@01b1cd81...`, release `v2.2`):** renderer-native D3D11 integration into Owlcat's Unity/Waaagh render graph. It controls scaled vs output resolution, injects real camera jitter, keeps camera and object MV passes active, reads native depth/MV resources, executes DLSS before full-resolution post-processing, and corrects engine assumptions such as mip bias and screen-space particle sizing.
+
+**Key synthesis:** temporal quality is a ladder, not a boolean. BioShock demonstrates a carefully validated partial contract; Rogue Trader demonstrates a more renderer-native contract but still has known native-MV exclusions (cloth/capes) and a weaker explicit history-reset policy. LTR Bridge should combine the validation discipline of the former with the renderer integration fidelity of the latter.
+
+This also shows that `native motion vectors` is insufficient metadata. Provenance and content coverage are independent: a native buffer can omit classes of animated geometry. The provisional contract now records coverage/exclusions separately.
+
+Full case studies: `docs/CASE_STUDY_BIOSHOCK_VR.md` and `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`.
+
 ## Second-pass architectural conclusion
 
 The evidence now supports treating the x64 modern host as a reusable capability rather than an NVIDIA-specific workaround. Streamline targets 64-bit Windows, XeSS-SR is x64, and the current FSR API centers its backend-specific path on D3D12. The exact backend can remain replaceable while legacy adapters converge on a modern resource/synchronization boundary.
@@ -207,6 +221,8 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 - D3D8 should be evaluated through native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths rather than inheriting the D3D9 decision automatically.
 - Image-space flow with confidence is a useful baseline but remains semantically weaker than renderer-native/transform-derived motion, especially for SR and VR.
 - ReShade demonstrates practical depth discovery/preservation techniques, but depth selection must retain provenance and support game/profile overrides.
+- Real-game evidence now supports an explicit temporal-quality ladder: renderer-native camera+object motion > camera+depth reconstruction > optical flow, while still requiring coverage/exclusion metadata because native MV buffers can be incomplete.
+- Real SR integration must validate render-stage ordering and resolution-dependent engine assumptions, not only backend inputs and output size.
 - Per-eye temporal reconstruction can fit the same broad layers while requiring separate history, timing, and validation policies.
 
 ## Immediate research gaps
@@ -217,3 +233,4 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 4. Controlled measurement of copies and latency in a D3D11 x86 -> D3D12 x64 bridge.
 5. Motion-vector quality ladder on static geometry, skinned geometry, particles, and independently moving first-person/VR objects.
 6. A renderer-resolution control strategy for real SR in engines that hard-code backbuffer-sized targets.
+7. A controlled render-stage/resolution-assumption matrix for post-process, highlights/HUD, particles/billboards and mip bias when render and output extents differ.

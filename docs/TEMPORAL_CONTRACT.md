@@ -39,6 +39,8 @@ TemporalFrameInput
     jittered?
     dilated?
     provenance
+    coverage?
+    known_exclusions?
     confidence_or_validity?
 
   camera:
@@ -103,9 +105,13 @@ Minimum metadata should state:
 - render-resolution or output-resolution grid;
 - whether jitter is included;
 - whether vectors are dilated;
-- provider provenance and confidence/validation state.
+- provider provenance;
+- content coverage / known exclusions;
+- confidence/validation state.
 
 For reconstructed/optical-flow providers, confidence should be representable as an explicit per-pixel resource or typed mask rather than only a global provider label. Current legacy experiments already benefit from rejecting vectors using luma/depth/consistency tests; the contract should not force those diagnostics to be discarded before backend mapping.
+
+Native provenance does not imply complete motion coverage. The Rogue Trader renderer-native case study exposes camera and object motion-vector passes but still has known cloth/cape omissions that produce ghosting. Coverage therefore needs to remain independently describable even for a native renderer buffer.
 
 ## Depth semantics
 

@@ -110,3 +110,23 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 ## Research discipline
 
 When a design depends on an upstream implementation detail, replace moving `main` links with an exact commit or release tag in the relevant document before implementation begins.
+
+## Real-game temporal integration case studies
+
+### BioShock VR DLSS/DLAA
+
+- Repository: https://github.com/Beren5556/BioShock-VR-DLSS-DLAA
+- Reviewed release: `v0.2.17-en`.
+- Pinned source: `8671fc87c4646140419ea64bd6e60d59fcac4723`.
+- Research use: x86 D3D11 -> independent x64 per-eye NGX helpers, strict temporal identity/rejection, camera+depth motion reconstruction and stereo contamination testing.
+- Full notes: `docs/CASE_STUDY_BIOSHOCK_VR.md`.
+
+### Rogue Trader EnhancedGraphics
+
+- Original repository: https://github.com/cstamford/RogueTrader_DLSS — baseline reviewed at `f2444b09ecee649e39851715cb5133e7020e159c`.
+- Current public fork reviewed: https://github.com/BradyBrenot/RogueTrader_DLSS
+- Reviewed release: `v2.2`, source commit `01b1cd816db08f2b1c6c68b1319c6f44dd61bdd6`, published 2026-06-13.
+- Research use: renderer-native D3D11 color/depth/MV access, real camera jitter, true internal-resolution control, pre-postprocess reconstruction and resolution-dependent engine fixes.
+- Current known MV limitation: open issue `#2` documents cloth/cape ghosting because cloth is not represented correctly in the motion-vector path.
+- Licensing note: no root repository license was detected in the reviewed public snapshots. Treat source as reference-only unless explicit reuse terms are obtained; NVIDIA DLSS/NGX remains separately licensed.
+- Full notes: `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`.

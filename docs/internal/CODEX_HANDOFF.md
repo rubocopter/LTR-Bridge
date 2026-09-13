@@ -24,6 +24,7 @@ Core files now present:
 - `docs/DEPTH.md`
 - `docs/JITTER.md`
 - `docs/CASE_STUDY_BIOSHOCK_VR.md`
+- `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`
 - `docs/REFERENCES.md`
 
 ## Strongest first-pass findings
@@ -65,27 +66,42 @@ Pinned upstream: `Beren5556/BioShock-VR-DLSS-DLAA` release `v0.2.17-en`, source 
 7. **Observed upstream with qualification:** documented BS2 runs execute real NGX DLAA and multiple SR resolutions for thousands of frames through two eye hosts and an OpenXR simulator, but upstream explicitly does not claim final physical-headset image quality, complete object motion, sustained 90 Hz or a clean shutdown for those runs.
 8. **Verified licensing/provenance:** the repository is MIT; its x64 host derives from DLSS5-Feeder/NIGos dlss5-bridge and keeps NVIDIA NGX under separate NVIDIA terms.
 
+## Rogue Trader DLSS case-study findings
+
+Pinned public reference: `BradyBrenot/RogueTrader_DLSS` release `v2.2` / commit `01b1cd816db08f2b1c6c68b1319c6f44dd61bdd6`; original baseline `cstamford/RogueTrader_DLSS@f2444b09ecee649e39851715cb5133e7020e159c`. Full analysis is in `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`.
+
+1. **Verified from source:** the Waaagh/Unity render-graph integration reads native scene color, depth and motion vectors and forces both camera- and object-MV passes to remain active while replacing the game's AA/upscale stage.
+2. **Verified from source:** the provider controls true scaled render extent vs display extent and injects real renderer projection jitter through the camera buffer. DLSS executes before full-resolution post-processing.
+3. **Verified limitation:** native MV provenance is not equivalent to complete coverage. Current issue `#2` documents cloth/cape ghosting because cloth is missing from the motion-vector path. The provisional contract now keeps coverage/exclusions separate from provenance.
+4. **Verified from fork history:** real SR exposed non-backend engine assumptions: particle/billboard sizing used the wrong screen-size constant and mip bias needed render/output-ratio correction. Real SR testing must include these resolution-dependent behaviors.
+5. **Verified current architecture:** the 2026 fork removed process hooking/MinHook and now queues evaluation from managed code and executes it on Unity's render thread through `IssuePluginEventAndData`. Prefer the least-invasive engine-native render-thread mechanism when one exists; do not generalize it to legacy APIs that lack one.
+6. **Observed gap:** NGX history reset is primarily tied to feature recreation rather than the rich temporal discontinuity/rejection policy seen in BioShock. The harness should combine Rogue Trader's renderer-native inputs with BioShock's temporal identity/reset discipline.
+7. **Observed backend evidence:** the fork documents routing its DLSS input contract through OptiScaler for non-NVIDIA backends, supporting backend separation once coherent temporal inputs exist.
+8. **Licensing caution:** no root license was detected in the reviewed Rogue Trader repositories. Treat code as reference-only unless explicit reuse terms are obtained; NVIDIA SDK/runtime terms remain separate.
+
 ## Candidate architecture
 
 `Legacy API Adapter -> Temporal Data Provider -> optional Transport -> Modern Graphics Host -> Reconstruction Backend -> game/VR output`
 
-Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement. The BioShock case study independently strengthens the separation between shared semantic/transport/backend mechanisms and game-specific temporal providers.
+Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement. The BioShock and Rogue Trader case studies independently strengthen the separation between shared semantic/transport/backend mechanisms and game-specific temporal providers while showing different fidelity points on the same temporal-quality ladder.
 
 ## Next concrete work
 
 1. Re-inspect repository state and this handoff.
-2. Before implementing the D3D11 harness, mine the BioShock case study only for reusable validation ideas: exact frame/build identity, explicit reject reasons, camera+depth baseline motion, per-eye history isolation, deterministic stereo contamination tests and bounded helper failure/recovery. Do not import BioShock addresses/hooks or freeze its IPC ABI.
+2. Before implementing the D3D11 harness, mine the two real-game case studies only for reusable validation ideas: BioShock for exact identity/reject/reset/stereo isolation and camera+depth motion; Rogue Trader for renderer-native MV coverage, real jitter, render/output extent control and insertion-point/resolution-assumption tests. Do not import game-specific hooks or freeze either implementation's ABI.
 3. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
 4. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
-5. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes. Include camera+depth reconstruction as an intermediate baseline, not only native ground truth and optical flow.
+5. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes. Compare native camera+object motion, camera+depth reconstruction and optical flow; carry motion coverage/exclusions separately from provenance.
 6. Add diagnostic visualizations for the exact depth resource/convention, motion direction/scale/confidence/validity and history reset. Include an optical-flow baseline beside ground-truth/renderer-derived motion so quality loss is measurable rather than anecdotal.
 7. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe. From the first stereo-capable version, include two independent streams, distinct histories/resources, deterministic readback and cross-eye contamination detection.
 8. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
 9. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.
+10. When moving from native-AA to true SR, add a render-stage/resolution-assumption matrix covering post-processing, HUD/highlights, particles/billboards, mip bias and secondary-camera/pass behavior.
 
 ## Important upstream snapshot
 
 - BioShock VR DLSS/DLAA case study: `v0.2.17-en` / `8671fc87c4646140419ea64bd6e60d59fcac4723`.
+- Rogue Trader EnhancedGraphics case study: public fork `v2.2` / `01b1cd816db08f2b1c6c68b1319c6f44dd61bdd6` (original baseline `f2444b09ecee649e39851715cb5133e7020e159c`).
 - DLSS5-Feeder stable observed: `v0.15.1` / `3f62485`.
 - DLSS5-Feeder newest prerelease observed: `v1.16.0-beta.1` / `55c5bca`.
 - OptiScaler stable observed: `v0.9.4` / `7534ad0`.
@@ -96,8 +112,8 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 ## Repository publication
 
 - `origin` is `https://github.com/rubocopter/LTR-Bridge.git` on `main`.
-- The research/bootstrap, second research pass and BioShock VR case study are published to GitHub.
-- At the start of the BioShock investigation, the local checkout at `E:\LTR_bridge` was still on `e561885` and 24 commits behind `origin/main`, with the earlier research files locally modified/untracked. Do not rely on local Git status until it is deliberately synchronized/reconciled; the BioShock case-study commits in this pass were written to remote `main` through the repository integration.
+- The research/bootstrap, second research pass and BioShock VR case study are published to GitHub; the Rogue Trader case-study changes are part of the current research pass.
+- Before the Rogue Trader research edits, the local checkout at `E:\LTR_bridge` was reconciled and fast-forwarded to `4376f7bd41f67a5863fc749f26491ebd1117818f`; the stale local stash was resolved and removed, and the working tree was clean before this pass.
 
 ## Do not do next
 
