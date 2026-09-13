@@ -95,7 +95,7 @@ The following decisions remain deliberately open:
 | Decision | Evidence required before committing |
 | --- | --- |
 | ReShade as a required layer | At least two source APIs and one non-ReShade path compared for access, coexistence, and latency. |
-| dgVoodoo2 as default legacy route | D3D9 direct-vs-translation experiment with depth, MV opportunity, compatibility, and frame-time measurements. |
+| dgVoodoo2 as default legacy route | First resolve classic D3D9 vs D3D9Ex shared-texture interop, then compare native/relay and translation paths with depth, MV opportunity, compatibility, and frame-time measurements. |
 | D3D12 as universal host | Backend/API matrix showing another host cannot provide equivalent capability or materially lowers portability. |
 | Single universal backend interface | DLSS, FSR, and XeSS contract comparison with optional features represented without semantic loss. |
 | Optical flow as general MV fallback | Visual and temporal validation including animated geometry, particles, disocclusion, and VR head motion. |
@@ -105,7 +105,7 @@ The following decisions remain deliberately open:
 
 1. **Temporal semantics dominate transport.** A technically perfect x86/x64 bridge is not useful if legacy inputs are wrong.
 2. **Motion vectors may require engine-specific knowledge.** Camera-only reconstruction cannot describe skinned meshes, particles, independent weapons, or animation.
-3. **D3D9 sharing is not D3D11 sharing.** Native D3D9 resources cannot simply be opened by a D3D12 helper; a relay or translation route is likely required.
+3. **D3D9 sharing has a narrow documented interop path.** D3D9 textures can be opened by D3D11 under strict format/usage restrictions, but Microsoft separately scopes unsynchronized surface sharing to D3D9Ex. A relay may avoid whole-renderer translation, but classic D3D9 applicability must be proven before depending on it.
 4. **D3D10 sits between generations.** It can share legacy DXGI resources but lacks D3D11.1 NT handles, D3D11-style fences, and UAV capability needed by modern output paths.
 5. **Super Resolution changes the renderer.** Real SR requires control over internal render resolution, projection jitter, resource extents, post-processing, and UI composition; post-process downscale/re-upscale is not equivalent.
 6. **VR amplifies latency and temporal mistakes.** Per-eye divergence and head-motion errors can be uncomfortable even if screenshots look sharp.
