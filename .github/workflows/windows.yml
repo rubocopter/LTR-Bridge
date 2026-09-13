@@ -15,3 +15,10 @@ jobs:
         run: cmake --build build --config Release
       - name: Run deterministic readback test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Upload deterministic readback report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: temporal-harness-selftest
+          path: build/cmake/ltr_harness_selftest.txt
+          if-no-files-found: warn
