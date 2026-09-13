@@ -17,7 +17,8 @@ Status: **implemented (documentation), not experimentally validated**.
 - [x] Review the current NVIDIA RTX SDK/NGX distribution license from its primary license text.
 - [x] Identify the documented D3D9 -> D3D11 shared-texture path and the D3D9-vs-D3D9Ex ambiguity that requires a probe.
 - [ ] Pin additional upstream source commits where conclusions currently rely on moving `main` branches.
-- [ ] Complete the remaining licensing/redistribution review from primary license texts for AMD/Intel/ReShade and any component eventually selected for packaging; re-check all third-party terms before release.
+- [x] Review current primary distribution/license texts for AMD FidelityFX signed SDK binaries, Intel XeSS SDK, and ReShade/API headers.
+- [ ] Re-check the exact backend binaries, source files and third-party notices selected for packaging immediately before any release.
 
 ## Phase 1 — D3D11 x64 temporal harness
 
