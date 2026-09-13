@@ -112,7 +112,7 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 ## Repository publication
 
 - `origin` is `https://github.com/rubocopter/LTR-Bridge.git` on `main`.
-- The research/bootstrap, second research pass and BioShock VR case study are published to GitHub; the Rogue Trader case-study changes are part of the current research pass.
+- The research/bootstrap, second research pass, BioShock VR case study and Rogue Trader DLSS case study are published to GitHub.
 - Before the Rogue Trader research edits, the local checkout at `E:\LTR_bridge` was reconciled and fast-forwarded to `4376f7bd41f67a5863fc749f26491ebd1117818f`; the stale local stash was resolved and removed, and the working tree was clean before this pass.
 
 ## Do not do next
