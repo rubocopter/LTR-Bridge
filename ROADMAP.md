@@ -13,8 +13,11 @@ Status: **implemented (documentation), not experimentally validated**.
 - [x] Compare published DLSS, FidelityFX temporal upscaling, and XeSS temporal inputs.
 - [x] Define provisional architecture and temporal contract.
 - [x] Define initial D3D9, D3D10, x86/x64, and VR questions.
+- [x] Verify current Streamline/DLSS, FidelityFX/FSR and XeSS execution constraints relevant to host API and process bitness.
+- [x] Review the current NVIDIA RTX SDK/NGX distribution license from its primary license text.
+- [x] Identify the documented D3D9 -> D3D11 shared-texture path and the D3D9-vs-D3D9Ex ambiguity that requires a probe.
 - [ ] Pin additional upstream source commits where conclusions currently rely on moving `main` branches.
-- [ ] Complete a licensing/redistribution review from primary license texts for every candidate dependency.
+- [ ] Complete the remaining licensing/redistribution review from primary license texts for AMD/Intel/ReShade and any component eventually selected for packaging; re-check all third-party terms before release.
 
 ## Phase 1 — D3D11 x64 temporal harness
 
@@ -69,10 +72,17 @@ Also test Shader Model 4-compatible MV reconstruction paths and compare event-qu
 
 Status: **planned**.
 
-Compare two routes on the same controlled target:
+Start with a minimal API-interop probe before attempting reconstruction:
 
-1. native D3D9 interception plus a relay/transport designed for D3D9;
-2. dgVoodoo2 D3D9 -> D3D11 followed by the modern path.
+- classic D3D9 producer -> documented shared texture -> D3D11 consumer;
+- D3D9Ex producer -> the same D3D11 consumer;
+- verify allowed formats, pixel contents, synchronization, resize/recreation, OS/driver behavior and whether the classic-D3D9 case is genuinely supported.
+
+Then compare three routes on the same controlled target:
+
+1. native D3D9 interception plus a dedicated transport;
+2. native D3D9/D3D9Ex interception -> constrained shared-texture D3D11 relay -> modern path, when supported;
+3. dgVoodoo2 D3D9 -> D3D11 followed by the modern path.
 
 Collect compatibility, depth access, transform/MV visibility, proxy coexistence, GPU copies, latency, frame pacing, device reset behavior, and mod/VR integration impact.
 
