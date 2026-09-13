@@ -79,6 +79,20 @@ Research target: ReShade 6.8.0 ecosystem, with current `crosire/reshade` main ob
 
 **Verified licensing:** the current ReShade repository uses BSD-3-Clause as its project license. Relevant public API headers such as `reshade.hpp` and `reshade_api.hpp` explicitly permit BSD-3-Clause OR MIT. Any future reuse must still check the exact source file being copied rather than treating every third-party file in the repository as having identical terms.
 
+### Depth-access evidence
+
+**Verified from the current generic depth add-on:** D3D9 depth access may require replacing compatible depth formats with `INTZ`; D3D10/11 resources can be intercepted as typeless and exposed through shader-resource views; useful depth can need a backup before a clear; and multisampled depth requires explicit depth-resolve capability. This confirms that depth discovery, depth preservation and depth transport are separate adapter responsibilities.
+
+The add-on also uses heuristics such as resolution/aspect ratio, clear timing and draw workload. These are valuable discovery tools but do not prove that a selected resource is semantically the main-scene depth for every game.
+
+### Image-space motion-vector evidence
+
+**Observed current ecosystem:** LumeniteFX Kernel computes image-space motion plus confidence and is the currently recommended provider in DLSS5-Feeder; Feeder consumes 1/8-resolution flow and applies validation using confidence/luma/depth/consistency signals before constructing the temporal guide textures.
+
+**Observed limitations:** upstream documents ghosting in fast motion, thin moving geometry, flame/transparency problems and HUD contamination. Its experimental geometry-vector mode derives a camera model from flow + depth and remains noisy; upstream explicitly notes that proper geometry motion needs the game's real view-projection matrices.
+
+**Conclusion:** optical flow is useful as a controlled baseline, fallback and diagnostic source, but must remain lower-provenance than renderer-native or transform-derived motion. Per-pixel confidence/validity belongs in the provisional temporal contract.
+
 ## dgVoodoo2
 
 **Observed ecosystem use:** current tools deploy dgVoodoo2 as a D3D8/D3D9 -> D3D11 translation route before ReShade/modern processing.
@@ -100,6 +114,14 @@ Potential cost: the translation layer can hide or transform original D3D9 state 
 **Hypothesis:** if the route works for the target runtime, a native D3D9 adapter could preserve original renderer visibility while copying/encoding temporal payloads into purpose-built shared textures, open those textures in a private D3D11 relay, and reuse the D3D11 -> x64 modern-host transport. This could avoid whole-renderer translation through dgVoodoo2.
 
 **Experiment-pending:** a minimal D3D9/D3D9Ex producer -> D3D11 consumer probe must test classic D3D9 and D3D9Ex separately, the documented formats, pixel correctness, synchronization, resize/recreation and driver/OS behavior before this route is used architecturally.
+
+## D3D8 routes
+
+**Verified ecosystem path:** ReShade's current setup detects D3D8 imports and instructs the user to install `crosire/d3d8to9`, which translates D3D8 calls and shader bytecode into D3D9. The project is BSD-2-Clause and explicitly describes itself as an exact D3D8 -> D3D9 translation layer, while warning that behavior can still differ from native D3D8 on modern Windows/drivers.
+
+**Implication:** D3D8 now has three meaningful architecture candidates: native D3D8 interception, `d3d8to9` followed by the D3D9 route LTR Bridge eventually proves, and dgVoodoo2 followed by D3D11/12. The narrow `d3d8to9` route is especially interesting because it is open source and preserves more of the legacy API boundary than translating directly to D3D11, but it inherits D3D9 transport limitations.
+
+**Experiment-pending:** compare all three on the same controlled D3D8 scene before selecting a default.
 
 ## NVIDIA DLSS / Streamline temporal contract
 
@@ -149,6 +171,12 @@ Research target: Intel XeSS SDK `v3.0.2`, short commit `8fe81bd`, released 2026-
 
 **Implication:** VR temporal metadata should preserve view identity and predicted display time, and validation should log which predicted view matrices generated each eye's temporal inputs. Per-eye reconstruction should complete before those eye images are submitted in the projection layer. The exact placement relative to a legacy mod's own reprojection/pacing path remains experiment-pending.
 
+## Projection jitter: negative evidence from post-process experiments
+
+**Observed upstream:** DLSS5-Feeder normally uses a 1:1 DLAA contract with zero jitter because it sees a finished frame and cannot modify the game's camera. Its experimental synthetic-jitter path shifts a later downsample grid and reports that offset to DLSS, but upstream explicitly states that this does not create real renderer samples or game-side performance savings and becomes highly sensitive to estimated-MV errors.
+
+**Conclusion:** real SR requires projection jitter to enter before scene rasterization. A post-process sampling offset must have distinct provenance and must never be advertised as equivalent to game-render jitter. The likely legacy integration point is the projection matrix/fixed-function transform or vertex-shader camera constants, with draw classification needed to avoid jittering HUD and unrelated projections.
+
 ## Second-pass architectural conclusion
 
 The evidence now supports treating the x64 modern host as a reusable capability rather than an NVIDIA-specific workaround. Streamline targets 64-bit Windows, XeSS-SR is x64, and the current FSR API centers its backend-specific path on D3D12. The exact backend can remain replaceable while legacy adapters converge on a modern resource/synchronization boundary.
@@ -176,6 +204,9 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 - A generic x86/x64 transport can be backend-independent if it transports typed frame resources and synchronization rather than DLSS-specific state.
 - D3D10 can reuse most of a D3D11 transport behind a relay without unacceptable latency.
 - Direct D3D9 interception plus a constrained D3D11 relay may preserve useful temporal reconstruction opportunities while reusing the modern transport, if the D3D9/D3D9Ex sharing probe succeeds.
+- D3D8 should be evaluated through native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths rather than inheriting the D3D9 decision automatically.
+- Image-space flow with confidence is a useful baseline but remains semantically weaker than renderer-native/transform-derived motion, especially for SR and VR.
+- ReShade demonstrates practical depth discovery/preservation techniques, but depth selection must retain provenance and support game/profile overrides.
 - Per-eye temporal reconstruction can fit the same broad layers while requiring separate history, timing, and validation policies.
 
 ## Immediate research gaps
