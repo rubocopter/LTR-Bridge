@@ -6,12 +6,17 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cwchar>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -58,9 +63,11 @@ std::uint64_t g_frame_index = 0;
 std::uint32_t g_history_generation = 0;
 ltr::harness::HistoryResetReason g_pending_reset = ltr::harness::HistoryResetReason::startup;
 bool g_previous_valid = false;
+bool g_self_test = false;
 XMMATRIX g_previous_world = XMMatrixIdentity();
 XMMATRIX g_previous_vp = XMMatrixIdentity();
 ltr::harness::TemporalFrameDescription g_last_frame{};
+float g_cpu_probe_motion = 0.0f;
 
 ComPtr<ID3D11Device> g_device;
 ComPtr<ID3D11DeviceContext> g_context;
@@ -84,6 +91,14 @@ ComPtr<ID3D11Buffer> g_vertex_buffer;
 ComPtr<ID3D11Buffer> g_per_draw_buffer;
 ComPtr<ID3D11Buffer> g_debug_buffer;
 ComPtr<ID3D11SamplerState> g_sampler;
+
+struct ReadbackStats {
+    std::uint64_t active_pixels = 0;
+    std::uint64_t moving_pixels = 0;
+    float min_depth = 1.0f;
+    float max_motion = 0.0f;
+    double mean_motion = 0.0;
+};
 
 [[noreturn]] void ThrowHr(const char* operation, HRESULT hr) {
     char message[256]{};
@@ -223,7 +238,7 @@ void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
     CheckHr(g_device->CreateRenderTargetView(g_scene_color.Get(), nullptr, &g_scene_color_rtv), "CreateRTV(scene)");
     CheckHr(g_device->CreateShaderResourceView(g_scene_color.Get(), nullptr, &g_scene_color_srv), "CreateSRV(scene)");
 
-    color.Format = DXGI_FORMAT_R16G16_FLOAT;
+    color.Format = DXGI_FORMAT_R32G32_FLOAT;
     CheckHr(g_device->CreateTexture2D(&color, nullptr, &g_motion), "CreateTexture2D(motion)");
     CheckHr(g_device->CreateRenderTargetView(g_motion.Get(), nullptr, &g_motion_rtv), "CreateRTV(motion)");
     CheckHr(g_device->CreateShaderResourceView(g_motion.Get(), nullptr, &g_motion_srv), "CreateSRV(motion)");
@@ -301,6 +316,62 @@ void UploadPerDraw(const XMMATRIX& world, const XMMATRIX& previousWorld, const X
     CheckHr(g_context->Map(g_per_draw_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map(per-draw)");
     std::memcpy(mapped.pData, &constants, sizeof(constants)); g_context->Unmap(g_per_draw_buffer.Get(), 0);
     ID3D11Buffer* buffer = g_per_draw_buffer.Get(); g_context->VSSetConstantBuffers(0, 1, &buffer);
+    g_context->PSSetConstantBuffers(0, 1, &buffer);
+}
+
+ComPtr<ID3D11Texture2D> CreateReadbackTexture(ID3D11Texture2D* source) {
+    D3D11_TEXTURE2D_DESC desc{};
+    source->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    CheckHr(g_device->CreateTexture2D(&desc, nullptr, &staging), "CreateTexture2D(readback)");
+    return staging;
+}
+
+ReadbackStats ReadbackGroundTruth() {
+    const auto depthReadback = CreateReadbackTexture(g_depth.Get());
+    const auto motionReadback = CreateReadbackTexture(g_motion.Get());
+    g_context->CopyResource(depthReadback.Get(), g_depth.Get());
+    g_context->CopyResource(motionReadback.Get(), g_motion.Get());
+
+    D3D11_MAPPED_SUBRESOURCE depthMapped{};
+    D3D11_MAPPED_SUBRESOURCE motionMapped{};
+    CheckHr(g_context->Map(depthReadback.Get(), 0, D3D11_MAP_READ, 0, &depthMapped), "Map(depth readback)");
+    const HRESULT motionMapHr = g_context->Map(motionReadback.Get(), 0, D3D11_MAP_READ, 0, &motionMapped);
+    if (FAILED(motionMapHr)) {
+        g_context->Unmap(depthReadback.Get(), 0);
+        ThrowHr("Map(motion readback)", motionMapHr);
+    }
+
+    ReadbackStats stats{};
+    double motionSum = 0.0;
+    for (std::uint32_t y = 0; y < g_height; ++y) {
+        const auto* depthRow = reinterpret_cast<const float*>(static_cast<const std::byte*>(depthMapped.pData) + y * depthMapped.RowPitch);
+        const auto* motionRow = reinterpret_cast<const XMFLOAT2*>(static_cast<const std::byte*>(motionMapped.pData) + y * motionMapped.RowPitch);
+        for (std::uint32_t x = 0; x < g_width; ++x) {
+            const float depth = depthRow[x];
+            if (!std::isfinite(depth) || depth >= 0.99999f) continue;
+            ++stats.active_pixels;
+            stats.min_depth = (std::min)(stats.min_depth, depth);
+            const float magnitude = std::hypot(motionRow[x].x, motionRow[x].y);
+            if (!std::isfinite(magnitude)) {
+                g_context->Unmap(motionReadback.Get(), 0);
+                g_context->Unmap(depthReadback.Get(), 0);
+                throw std::runtime_error("non-finite motion vector found during readback");
+            }
+            stats.max_motion = (std::max)(stats.max_motion, magnitude);
+            motionSum += magnitude;
+            if (magnitude > 0.05f) ++stats.moving_pixels;
+        }
+    }
+    if (stats.active_pixels != 0) stats.mean_motion = motionSum / static_cast<double>(stats.active_pixels);
+
+    g_context->Unmap(motionReadback.Get(), 0);
+    g_context->Unmap(depthReadback.Get(), 0);
+    return stats;
 }
 
 const wchar_t* ScenarioName() {
@@ -363,6 +434,15 @@ void Render(double seconds) {
     XMMATRIX previousWorld = g_previous_world, previousVp = g_previous_vp;
     if (!g_previous_valid || g_pending_reset != ltr::harness::HistoryResetReason::none) { previousWorld = world; previousVp = vp; }
 
+    const XMVECTOR probeLocal = XMVectorSet(0.7f, 0.5f, 0.0f, 1.0f);
+    const XMVECTOR currentProbeClip = XMVector4Transform(XMVector4Transform(probeLocal, world), vp);
+    const XMVECTOR previousProbeClip = XMVector4Transform(XMVector4Transform(probeLocal, previousWorld), previousVp);
+    const float currentProbeX = (XMVectorGetX(currentProbeClip) / XMVectorGetW(currentProbeClip) * 0.5f + 0.5f) * g_width;
+    const float currentProbeY = (-XMVectorGetY(currentProbeClip) / XMVectorGetW(currentProbeClip) * 0.5f + 0.5f) * g_height;
+    const float previousProbeX = (XMVectorGetX(previousProbeClip) / XMVectorGetW(previousProbeClip) * 0.5f + 0.5f) * g_width;
+    const float previousProbeY = (-XMVectorGetY(previousProbeClip) / XMVectorGetW(previousProbeClip) * 0.5f + 0.5f) * g_height;
+    g_cpu_probe_motion = std::hypot(previousProbeX - currentProbeX, previousProbeY - currentProbeY);
+
     const float sceneClear[4]{0.035f, 0.045f, 0.065f, 1.0f}; const float motionClear[4]{};
     g_context->ClearRenderTargetView(g_scene_color_rtv.Get(), sceneClear); g_context->ClearRenderTargetView(g_motion_rtv.Get(), motionClear);
     g_context->ClearDepthStencilView(g_depth_dsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -384,10 +464,77 @@ void Render(double seconds) {
     ID3D11ShaderResourceView* resources[3]{g_scene_color_srv.Get(), g_depth_srv.Get(), g_motion_srv.Get()}; g_context->PSSetShaderResources(0, 3, resources);
     ID3D11SamplerState* sampler = g_sampler.Get(); g_context->PSSetSamplers(0, 1, &sampler); g_context->Draw(3, 0);
     ID3D11ShaderResourceView* nullSrvs[3]{}; g_context->PSSetShaderResources(0, 3, nullSrvs);
-    CheckHr(g_swap_chain->Present(1, 0), "Present");
+    CheckHr(g_swap_chain->Present(g_self_test ? 0u : 1u, 0), "Present");
 
     g_previous_world = world; g_previous_vp = vp; g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
     ++g_frame_index; UpdateTitle();
+}
+
+bool HasExpectedMotion(const ReadbackStats& stats, bool expectMotion) {
+    if (expectMotion) return stats.max_motion > 0.25f && stats.moving_pixels > 0;
+    return stats.max_motion <= 0.05f && stats.moving_pixels == 0;
+}
+
+void AppendStats(std::ostringstream& report, const char* label, const char* phase, const ReadbackStats& stats, bool ok) {
+    report << (ok ? "PASS " : "FAIL ") << label << ' ' << phase
+           << " active=" << stats.active_pixels
+           << " moving=" << stats.moving_pixels
+           << " min_depth=" << stats.min_depth
+           << " mean_motion=" << stats.mean_motion
+           << " max_motion=" << stats.max_motion
+           << " cpu_probe_motion=" << g_cpu_probe_motion << '\n';
+}
+
+bool ValidateStats(const ReadbackStats& stats, bool expectMotion, bool requireStaticCoverage) {
+    const std::uint64_t minimumActive = static_cast<std::uint64_t>(g_width) * g_height / 100u;
+    if (stats.active_pixels < minimumActive) return false;
+    if (!(stats.min_depth >= 0.0f && stats.min_depth < 0.99999f)) return false;
+    if (!HasExpectedMotion(stats, expectMotion)) return false;
+    if (requireStaticCoverage && stats.moving_pixels >= (stats.active_pixels * 4u) / 5u) return false;
+    return true;
+}
+
+bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
+                      bool expectMotion, bool requireStaticCoverage, std::ostringstream& report) {
+    g_scenario = scenario;
+    g_pending_reset = ltr::harness::HistoryResetReason::scenario_change;
+    const std::uint32_t expectedGeneration = g_history_generation + 1u;
+    Render(0.0);
+    const ReadbackStats resetStats = ReadbackGroundTruth();
+    const bool resetOk = g_last_frame.identity.history_generation == expectedGeneration &&
+                         g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::scenario_change &&
+                         ValidateStats(resetStats, false, false);
+    AppendStats(report, name, "reset", resetStats, resetOk);
+
+    const std::uint64_t expectedFrame = g_last_frame.identity.frame_index + 1u;
+    Render(secondTime);
+    const ReadbackStats steadyStats = ReadbackGroundTruth();
+    const bool steadyOk = g_last_frame.identity.frame_index == expectedFrame &&
+                          g_last_frame.identity.history_generation == expectedGeneration &&
+                          g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::none &&
+                          ValidateStats(steadyStats, expectMotion, requireStaticCoverage);
+    AppendStats(report, name, "steady", steadyStats, steadyOk);
+    return resetOk && steadyOk;
+}
+
+bool RunDeterministicSelfTest() {
+    std::ostringstream report;
+    report << "LTR Bridge deterministic D3D11 ground-truth readback\n";
+    report << "extent=" << g_width << 'x' << g_height
+           << " motion=R32G32_FLOAT direction=current-to-previous units=render-pixels jitter-included=false\n";
+
+    bool ok = true;
+    ok &= RunScenarioCheck(Scenario::static_scene, "static", 0.0, false, false, report);
+    ok &= RunScenarioCheck(Scenario::camera_translate, "camera-translate", 1.0, true, false, report);
+    ok &= RunScenarioCheck(Scenario::camera_rotate, "camera-rotate", 1.0, true, false, report);
+    ok &= RunScenarioCheck(Scenario::rigid_object, "rigid-object", 1.0, true, true, report);
+    report << (ok ? "RESULT PASS\n" : "RESULT FAIL\n");
+
+    std::ofstream output("ltr_harness_selftest.txt", std::ios::trunc);
+    output << report.str();
+    output.close();
+    OutputDebugStringA(report.str().c_str());
+    return ok;
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -410,6 +557,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     try {
+        g_self_test = std::wcsstr(GetCommandLineW(), L"--self-test") != nullptr;
         WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.style = CS_HREDRAW | CS_VREDRAW; wc.lpfnWndProc = WindowProc;
         wc.hInstance = instance; wc.hCursor = LoadCursorW(nullptr, IDC_ARROW); wc.lpszClassName = kWindowClass;
         if (!RegisterClassExW(&wc)) ThrowHr("RegisterClassExW", HRESULT_FROM_WIN32(GetLastError()));
@@ -417,7 +565,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         g_window = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                    rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
         if (!g_window) ThrowHr("CreateWindowExW", HRESULT_FROM_WIN32(GetLastError()));
-        ShowWindow(g_window, showCommand); CreateDeviceAndPipeline();
+        if (!g_self_test) ShowWindow(g_window, showCommand);
+        CreateDeviceAndPipeline();
+        if (g_self_test) {
+            const bool ok = RunDeterministicSelfTest();
+            DestroyWindow(g_window);
+            return ok ? 0 : 2;
+        }
         const auto start = std::chrono::steady_clock::now(); MSG msg{};
         while (msg.message != WM_QUIT) {
             if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }

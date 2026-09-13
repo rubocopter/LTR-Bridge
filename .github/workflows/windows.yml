@@ -1,0 +1,17 @@
+name: Windows harness
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  phase1-harness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure x64
+        run: cmake -S . -B build -A x64
+      - name: Build Release
+        run: cmake --build build --config Release
+      - name: Run deterministic readback test
+        run: ctest --test-dir build -C Release --output-on-failure
