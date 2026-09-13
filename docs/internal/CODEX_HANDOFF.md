@@ -37,10 +37,12 @@ Core files now present:
 1. DLSS5-Feeder stable remains `v0.15.1`; newest observed prerelease is `v1.16.0-beta.1` / `55c5bca` (2026-09-10). The x86/host64 pair uses IPC protocol v9 and must match, reinforcing explicit protocol/build-generation diagnostics.
 2. Streamline's current programming guide requires 64-bit Windows for SL features; XeSS-SR requires Windows x64. The x64 host is therefore a reusable multi-backend capability, not just a Feeder/NVIDIA workaround.
 3. XeSS SDK `v3.0.2` is current. D3D12 is the generic cross-vendor SR path; current D3D11 XeSS-SR support is Intel Arc-or-later only. XeSS 3 also exposes externally managed heap concepts relevant to modern resource ownership.
-4. AMD FSR SDK `2.3.0` exposes a five-function FSR API through signed DLLs; its current backend-specific API path is documented for DirectX 12. Exact x86 binary availability remains unverified from release artifacts.
+4. AMD FSR SDK `2.3.0` exposes a five-function FSR API through signed DLLs; its current backend-specific API path is documented for DirectX 12. Exact x86 binary availability remains unverified from PE headers.
 5. Microsoft's D3D11 `OpenSharedResource` docs explicitly describe D3D9 -> D3D11 shared textures under strict restrictions. A separate Microsoft overview says unsynchronized sharing requires D3D9Ex and excludes D3D9c/older runtimes. This is now a concrete probe, not a fact to generalize.
 6. NVIDIA RTX SDK license v. March 14 2024 was reviewed from the primary text. It permits covered SDK material incorporated in object-code form subject to requirements, disallows standalone SDK redistribution, and adds DLSS/NGX-specific hardware, attribution and commercial-release notification terms.
 7. OpenXR 1.1 confirms per-view poses tied to a target `predictedDisplayTime`; VR validation should preserve/log that timing and view identity through the temporal pipeline.
+8. AMD FidelityFX, Intel XeSS and ReShade primary licensing was reviewed at the architecture-research level. AMD permits covered binary redistribution subject to notices and no reverse engineering; Intel XeSS permits redistribution of unmodified binary software with notices and no reverse engineering; ReShade is BSD-3-Clause with key public API headers dual BSD-3-Clause/MIT. Exact selected files/binaries still require a release-time check.
+9. The current AMD `signedbin` tree contains one DX12 DLL set without architecture-specific filenames. That is insufficient evidence of x86 or x64 machine type, so FSR CPU-architecture support remains explicitly unverified until the PE headers are inspected.
 
 ## Candidate architecture
 
@@ -51,7 +53,7 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 ## Next concrete work
 
 1. Re-inspect repository state and this handoff.
-2. Inspect current AMD FSR release artifacts and finish remaining primary-license reviews; NVIDIA RTX SDK and dgVoodoo2 primary terms are already recorded.
+2. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
 3. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
 4. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes.
 5. Add diagnostic visualizations for depth, motion direction/scale and history reset.
