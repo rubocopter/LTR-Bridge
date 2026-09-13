@@ -77,6 +77,8 @@ Research target: ReShade 6.8.0 ecosystem, with current `crosire/reshade` main ob
 
 **Conclusion:** ReShade is a strong prototyping substrate because it already solves broad injection/API observation and depth discovery. It should not become an obligatory production dependency until direct adapters are compared for visibility, coexistence, performance, and VR integration.
 
+**Verified licensing:** the current ReShade repository uses BSD-3-Clause as its project license. Relevant public API headers such as `reshade.hpp` and `reshade_api.hpp` explicitly permit BSD-3-Clause OR MIT. Any future reuse must still check the exact source file being copied rather than treating every third-party file in the repository as having identical terms.
+
 ## dgVoodoo2
 
 **Observed ecosystem use:** current tools deploy dgVoodoo2 as a D3D8/D3D9 -> D3D11 translation route before ReShade/modern processing.
@@ -123,7 +125,9 @@ NVIDIA explicitly requires correct jitter and motion-vector scaling; matrices su
 
 **Verified current SDK state:** the current repository identifies itself as AMD FSR SDK 2.3.0. Its FSR API exposes a small five-function ABI through provided signed DLLs, and current documentation says backend-specific functionality is supported through the DirectX 12 DLL. The SDK repository also discusses Vulkan at a broader level, so the exact deployment path must be scoped to the API being used rather than inferred from the repository headline.
 
-**Open question:** current x86 binary availability is not yet established from a primary artifact inventory. Do not assume either x86 support or x64 exclusivity; inspect the actual release package before choosing the process boundary. D3D12 remains the strongest first modern-host target regardless.
+**Verified licensing/distribution:** AMD's current SDK license permits use and redistribution of the covered software in binary form subject to retaining the required notices and terms, and prohibits reverse engineering/decompilation/disassembly of those binaries. The SDK license separately enumerates source files/components with their own terms, so LTR Bridge should prefer the documented signed-binary API boundary unless and until a specific source component is selected and its exact license is reviewed.
+
+**Artifact inspection:** the current `Kits/FidelityFX/signedbin` directory exposes one DX12 loader/upscaler DLL set without architecture-specific filenames. This does not establish the PE machine type. Current x86 binary availability therefore remains unverified; do not assume either x86 support or x64 exclusivity until the actual binary headers can be inspected. D3D12 remains the strongest first modern-host target regardless.
 
 ## Intel XeSS
 
@@ -136,6 +140,8 @@ Research target: Intel XeSS SDK `v3.0.2`, short commit `8fe81bd`, released 2026-
 **Verified execution constraints:** XeSS-SR requires Windows 10/11 x64. Its D3D12 path is documented for Intel and other vendors meeting the feature requirements, while the D3D11 SR path is currently limited to Intel Arc or later. For a generic backend, this favors an x64 D3D12 host over treating D3D11 as the universal XeSS execution API.
 
 **Observed current SDK direction:** XeSS 3.0.0 added external-memory-heap support for sharing GPU memory with other engine components, and the current D3D12 SR path permits application-provided temporary heaps/descriptors. This is useful evidence that modern backends can cooperate with externally managed memory, but it is not proof that XeSS supplies LTR Bridge's cross-process transport.
+
+**Verified licensing:** the current XeSS SDK is distributed under Intel Simplified Software License (Version October 2022). Intel permits use and redistribution of the binary software without modification when the copyright/license terms are reproduced, prohibits using Intel/supplier names for endorsement without permission, and prohibits reverse engineering, decompilation, disassembly or modification of the binary. Third-party components retain separate terms.
 
 ## OpenXR / VR timing contract
 
@@ -174,8 +180,8 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 
 ## Immediate research gaps
 
-1. Finish primary-license review for the remaining candidate dependencies and re-check all terms immediately before any shipping decision; NVIDIA RTX SDK and dgVoodoo2 primary terms are now recorded.
-2. Inspect current AMD FSR release artifacts to establish actual CPU architectures/redistribution details rather than infer x86 support.
+1. Re-check the exact backend binaries, source files and third-party notices selected for any future distribution immediately before shipping; current NVIDIA, AMD, Intel, ReShade and dgVoodoo2 primary terms are now recorded at the level needed for architecture research.
+2. Inspect the PE machine type of current AMD FSR signed DLLs when direct binary inspection is available; filenames/tree structure alone do not establish x86/x64 support.
 3. Run the minimal classic-D3D9 vs D3D9Ex -> D3D11 shared-texture probe before committing to a D3D9 transport architecture.
 4. Controlled measurement of copies and latency in a D3D11 x86 -> D3D12 x64 bridge.
 5. Motion-vector quality ladder on static geometry, skinned geometry, particles, and independently moving first-person/VR objects.
