@@ -288,7 +288,7 @@ void CreateDeviceAndPipeline() {
 
     constexpr std::array<Vertex, 6> vertices{{
         {{-1.1f, -0.8f, 0.0f}, {0.9f, 0.2f, 0.2f}}, {{0.0f, 1.0f, 0.0f}, {0.2f, 0.9f, 0.3f}}, {{1.1f, -0.8f, 0.0f}, {0.2f, 0.3f, 0.95f}},
-        {{-4.0f, -1.4f, -2.0f}, {0.25f, 0.27f, 0.31f}}, {{4.0f, -1.4f, -2.0f}, {0.32f, 0.34f, 0.38f}}, {{0.0f, -1.4f, 5.0f}, {0.20f, 0.22f, 0.26f}},
+        {{-4.0f, -1.4f, -2.0f}, {0.25f, 0.27f, 0.31f}}, {{0.0f, -1.4f, 5.0f}, {0.20f, 0.22f, 0.26f}}, {{4.0f, -1.4f, -2.0f}, {0.32f, 0.34f, 0.38f}},
     }};
     D3D11_BUFFER_DESC vb{}; vb.ByteWidth = sizeof(vertices); vb.Usage = D3D11_USAGE_IMMUTABLE; vb.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     D3D11_SUBRESOURCE_DATA init{}; init.pSysMem = vertices.data();
