@@ -16,6 +16,9 @@ Status: **implemented (documentation), not experimentally validated**.
 - [x] Verify current Streamline/DLSS, FidelityFX/FSR and XeSS execution constraints relevant to host API and process bitness.
 - [x] Review the current NVIDIA RTX SDK/NGX distribution license from its primary license text.
 - [x] Identify the documented D3D9 -> D3D11 shared-texture path and the D3D9-vs-D3D9Ex ambiguity that requires a probe.
+- [x] Record current D3D8 routes: native interception, `d3d8to9` -> D3D9 and dgVoodoo2 -> D3D11/12.
+- [x] Record concrete depth-access behavior from ReShade across D3D9/10/11 and current optical-flow/MV-provider limitations.
+- [x] Separate real renderer projection jitter from post-process/synthetic sampling jitter.
 - [ ] Pin additional upstream source commits where conclusions currently rely on moving `main` branches.
 - [x] Review current primary distribution/license texts for AMD FidelityFX signed SDK binaries, Intel XeSS SDK, and ReShade/API headers.
 - [ ] Re-check the exact backend binaries, source files and third-party notices selected for packaging immediately before any release.
@@ -29,6 +32,7 @@ Goal: prove temporal correctness without legacy transport complexity.
 Success criteria:
 
 - controlled color, depth, motion vectors, and projection jitter;
+- compare renderer-native/ground-truth motion against an image-space optical-flow baseline and preserve confidence/validity diagnostics;
 - explicit history reset;
 - 1:1 native-resolution temporal AA path first;
 - debug views that validate depth/MV direction and scale;
@@ -92,6 +96,12 @@ Collect compatibility, depth access, transform/MV visibility, proxy coexistence,
 Status: **planned**.
 
 Choose a title only after Phases 1–5 establish which architecture is justified. A game is a validation target, not the place to invent the basic transport contract.
+
+## D3D8 comparison — after the D3D9 boundary is understood
+
+Status: **planned**.
+
+Use the same controlled D3D8 target to compare native interception, `d3d8to9` followed by the proven D3D9 route, and dgVoodoo2 followed by the modern route. The decision should include renderer-state visibility, depth/MV opportunity, compatibility, proxy coexistence, redistribution and performance.
 
 ## Phase 7 — controlled stereo/OpenXR harness
 
