@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -30,7 +31,7 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"LTRBridgeTemporalHarness";
 constexpr wchar_t kWindowTitle[] = L"LTR Bridge - D3D11 x64 Temporal Harness";
 
-enum class Scenario : std::uint32_t { static_scene = 0, camera_translate, camera_rotate, rigid_object, count };
+enum class Scenario : std::uint32_t { static_scene = 0, camera_translate, camera_rotate, rigid_object, disocclusion, count };
 enum class DebugView : std::uint32_t { scene = 0, depth, motion, reconstructed_motion, count };
 
 struct Vertex { XMFLOAT3 position; XMFLOAT3 color; };
@@ -42,7 +43,8 @@ struct PerDrawConstants {
     XMFLOAT4X4 current_vp_unjittered;
     XMFLOAT4X4 previous_vp_unjittered;
     XMFLOAT2 render_size;
-    XMFLOAT2 padding{};
+    std::uint32_t surface_id = 0;
+    std::uint32_t padding = 0;
 };
 
 struct DebugConstants {
@@ -77,6 +79,11 @@ bool g_previous_valid = false;
 bool g_self_test = false;
 XMMATRIX g_previous_world = XMMatrixIdentity();
 XMMATRIX g_previous_vp = XMMatrixIdentity();
+float g_previous_jitter_x = 0.0f;
+float g_previous_jitter_y = 0.0f;
+float g_last_previous_jitter_x = 0.0f;
+float g_last_previous_jitter_y = 0.0f;
+std::vector<std::uint32_t> g_previous_surface_ids;
 ltr::harness::TemporalFrameDescription g_last_frame{};
 float g_cpu_probe_motion = 0.0f;
 
@@ -90,6 +97,8 @@ ComPtr<ID3D11ShaderResourceView> g_scene_color_srv;
 ComPtr<ID3D11Texture2D> g_motion;
 ComPtr<ID3D11RenderTargetView> g_motion_rtv;
 ComPtr<ID3D11ShaderResourceView> g_motion_srv;
+ComPtr<ID3D11Texture2D> g_surface_id;
+ComPtr<ID3D11RenderTargetView> g_surface_id_rtv;
 ComPtr<ID3D11Texture2D> g_reconstructed_motion;
 ComPtr<ID3D11RenderTargetView> g_reconstructed_motion_rtv;
 ComPtr<ID3D11ShaderResourceView> g_reconstructed_motion_srv;
@@ -114,6 +123,15 @@ struct ReadbackStats {
     float min_depth = 1.0f;
     float max_motion = 0.0f;
     double mean_motion = 0.0;
+};
+
+struct HistoryValidityStats {
+    std::uint64_t active_pixels = 0;
+    std::uint64_t valid_pixels = 0;
+    std::uint64_t invalid_pixels = 0;
+    std::uint64_t surface_mismatch_pixels = 0;
+    std::uint64_t out_of_bounds_pixels = 0;
+    std::uint64_t disoccluded_background_pixels = 0;
 };
 
 struct ReconstructionStats {
@@ -207,7 +225,8 @@ cbuffer PerDraw : register(b0) {
     row_major float4x4 currentVpUnjittered;
     row_major float4x4 previousVpUnjittered;
     float2 renderSize;
-    float2 padding;
+    uint surfaceId;
+    uint padding;
 };
 struct VSIn { float3 position : POSITION; float3 color : COLOR0; };
 struct VSOut {
@@ -227,7 +246,7 @@ VSOut SceneVS(VSIn input) {
     output.color = input.color;
     return output;
 }
-struct PSOut { float4 color : SV_Target0; float2 motion : SV_Target1; };
+struct PSOut { float4 color : SV_Target0; float2 motion : SV_Target1; uint surface : SV_Target2; };
 PSOut ScenePS(VSOut input) {
     PSOut output;
     output.color = float4(input.color, 1.0);
@@ -238,6 +257,7 @@ PSOut ScenePS(VSOut input) {
     float2 previousPixels = float2((previousNdc.x * 0.5 + 0.5) * renderSize.x,
                                    (-previousNdc.y * 0.5 + 0.5) * renderSize.y);
     output.motion = previousPixels - currentPixels;
+    output.surface = surfaceId;
     return output;
 }
 )hlsl";
@@ -316,6 +336,7 @@ void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
     g_backbuffer_rtv.Reset();
     g_scene_color.Reset(); g_scene_color_rtv.Reset(); g_scene_color_srv.Reset();
     g_motion.Reset(); g_motion_rtv.Reset(); g_motion_srv.Reset();
+    g_surface_id.Reset(); g_surface_id_rtv.Reset();
     g_reconstructed_motion.Reset(); g_reconstructed_motion_rtv.Reset(); g_reconstructed_motion_srv.Reset();
     g_depth.Reset(); g_depth_dsv.Reset(); g_depth_srv.Reset();
 
@@ -336,6 +357,13 @@ void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
     CheckHr(g_device->CreateTexture2D(&color, nullptr, &g_motion), "CreateTexture2D(motion)");
     CheckHr(g_device->CreateRenderTargetView(g_motion.Get(), nullptr, &g_motion_rtv), "CreateRTV(motion)");
     CheckHr(g_device->CreateShaderResourceView(g_motion.Get(), nullptr, &g_motion_srv), "CreateSRV(motion)");
+
+    D3D11_TEXTURE2D_DESC surfaceId = color;
+    surfaceId.Format = DXGI_FORMAT_R32_UINT;
+    surfaceId.BindFlags = D3D11_BIND_RENDER_TARGET;
+    CheckHr(g_device->CreateTexture2D(&surfaceId, nullptr, &g_surface_id), "CreateTexture2D(surface id)");
+    CheckHr(g_device->CreateRenderTargetView(g_surface_id.Get(), nullptr, &g_surface_id_rtv), "CreateRTV(surface id)");
+
     CheckHr(g_device->CreateTexture2D(&color, nullptr, &g_reconstructed_motion), "CreateTexture2D(reconstructed motion)");
     CheckHr(g_device->CreateRenderTargetView(g_reconstructed_motion.Get(), nullptr, &g_reconstructed_motion_rtv), "CreateRTV(reconstructed motion)");
     CheckHr(g_device->CreateShaderResourceView(g_reconstructed_motion.Get(), nullptr, &g_reconstructed_motion_srv), "CreateSRV(reconstructed motion)");
@@ -350,7 +378,7 @@ void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
     D3D11_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_R32_FLOAT; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srv.Texture2D.MipLevels = 1;
     CheckHr(g_device->CreateShaderResourceView(g_depth.Get(), &srv, &g_depth_srv), "CreateSRV(depth)");
 
-    g_width = width; g_height = height; g_previous_valid = false;
+    g_width = width; g_height = height; g_previous_valid = false; g_previous_surface_ids.clear();
 }
 
 void CreateDeviceAndPipeline() {
@@ -407,12 +435,13 @@ void CreateDeviceAndPipeline() {
 }
 
 void UploadPerDraw(const XMMATRIX& world, const XMMATRIX& previousWorld, const XMMATRIX& currentJittered,
-                   const XMMATRIX& currentUnjittered, const XMMATRIX& previousVp) {
+                   const XMMATRIX& currentUnjittered, const XMMATRIX& previousVp, std::uint32_t surfaceId) {
     PerDrawConstants constants{};
     XMStoreFloat4x4(&constants.current_world, world); XMStoreFloat4x4(&constants.previous_world, previousWorld);
     XMStoreFloat4x4(&constants.current_vp_jittered, currentJittered); XMStoreFloat4x4(&constants.current_vp_unjittered, currentUnjittered);
     XMStoreFloat4x4(&constants.previous_vp_unjittered, previousVp);
     constants.render_size = { static_cast<float>(g_width), static_cast<float>(g_height) };
+    constants.surface_id = surfaceId;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     CheckHr(g_context->Map(g_per_draw_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map(per-draw)");
     std::memcpy(mapped.pData, &constants, sizeof(constants)); g_context->Unmap(g_per_draw_buffer.Get(), 0);
@@ -491,6 +520,99 @@ ReadbackStats ReadbackGroundTruth(const char* diagnosticLabel = nullptr) {
         WriteBitmap32(prefix + "_motion.bmp", motionPixels);
     }
 
+    g_context->Unmap(motionReadback.Get(), 0);
+    g_context->Unmap(depthReadback.Get(), 0);
+    return stats;
+}
+
+HistoryValidityStats ReadbackHistoryValidity(bool historyAvailable, const char* diagnosticLabel = nullptr) {
+    const auto depthReadback = CreateReadbackTexture(g_depth.Get());
+    const auto motionReadback = CreateReadbackTexture(g_motion.Get());
+    const auto surfaceReadback = CreateReadbackTexture(g_surface_id.Get());
+    g_context->CopyResource(depthReadback.Get(), g_depth.Get());
+    g_context->CopyResource(motionReadback.Get(), g_motion.Get());
+    g_context->CopyResource(surfaceReadback.Get(), g_surface_id.Get());
+
+    D3D11_MAPPED_SUBRESOURCE depthMapped{};
+    D3D11_MAPPED_SUBRESOURCE motionMapped{};
+    D3D11_MAPPED_SUBRESOURCE surfaceMapped{};
+    CheckHr(g_context->Map(depthReadback.Get(), 0, D3D11_MAP_READ, 0, &depthMapped), "Map(depth validity)");
+    HRESULT hr = g_context->Map(motionReadback.Get(), 0, D3D11_MAP_READ, 0, &motionMapped);
+    if (FAILED(hr)) {
+        g_context->Unmap(depthReadback.Get(), 0);
+        ThrowHr("Map(motion validity)", hr);
+    }
+    hr = g_context->Map(surfaceReadback.Get(), 0, D3D11_MAP_READ, 0, &surfaceMapped);
+    if (FAILED(hr)) {
+        g_context->Unmap(motionReadback.Get(), 0);
+        g_context->Unmap(depthReadback.Get(), 0);
+        ThrowHr("Map(surface validity)", hr);
+    }
+
+    const std::size_t pixelCount = static_cast<std::size_t>(g_width) * g_height;
+    std::vector<std::uint32_t> currentSurfaceIds(pixelCount, 0u);
+    std::vector<std::uint32_t> diagnosticPixels;
+    if (diagnosticLabel) diagnosticPixels.resize(pixelCount);
+    HistoryValidityStats stats{};
+    const bool previousSurfaceAvailable = historyAvailable && g_previous_surface_ids.size() == pixelCount;
+    const float jitterDeltaX = g_last_previous_jitter_x - g_last_frame.jitter_x_pixels;
+    const float jitterDeltaY = g_last_previous_jitter_y - g_last_frame.jitter_y_pixels;
+
+    for (std::uint32_t y = 0; y < g_height; ++y) {
+        const auto* depthRow = reinterpret_cast<const float*>(static_cast<const std::byte*>(depthMapped.pData) + y * depthMapped.RowPitch);
+        const auto* motionRow = reinterpret_cast<const XMFLOAT2*>(static_cast<const std::byte*>(motionMapped.pData) + y * motionMapped.RowPitch);
+        const auto* surfaceRow = reinterpret_cast<const std::uint32_t*>(static_cast<const std::byte*>(surfaceMapped.pData) + y * surfaceMapped.RowPitch);
+        for (std::uint32_t x = 0; x < g_width; ++x) {
+            const std::size_t index = static_cast<std::size_t>(y) * g_width + x;
+            const float depth = depthRow[x];
+            if (!std::isfinite(depth) || depth >= 0.99999f) continue;
+            const std::uint32_t currentSurface = surfaceRow[x];
+            currentSurfaceIds[index] = currentSurface;
+            ++stats.active_pixels;
+
+            bool valid = false;
+            bool outOfBounds = false;
+            std::uint32_t previousSurface = 0u;
+            if (previousSurfaceAvailable) {
+                const float previousX = static_cast<float>(x) + 0.5f + motionRow[x].x + jitterDeltaX;
+                const float previousY = static_cast<float>(y) + 0.5f + motionRow[x].y + jitterDeltaY;
+                const int previousPixelX = static_cast<int>(std::floor(previousX));
+                const int previousPixelY = static_cast<int>(std::floor(previousY));
+                outOfBounds = previousPixelX < 0 || previousPixelY < 0 ||
+                              previousPixelX >= static_cast<int>(g_width) || previousPixelY >= static_cast<int>(g_height);
+                if (!outOfBounds) {
+                    const std::size_t previousIndex = static_cast<std::size_t>(previousPixelY) * g_width +
+                                                      static_cast<std::size_t>(previousPixelX);
+                    previousSurface = g_previous_surface_ids[previousIndex];
+                    valid = currentSurface != 0u && previousSurface == currentSurface;
+                }
+            }
+
+            if (valid) {
+                ++stats.valid_pixels;
+                if (diagnosticLabel) diagnosticPixels[index] = PackBgra(0.0f, 1.0f, 0.0f);
+            } else {
+                ++stats.invalid_pixels;
+                if (outOfBounds) {
+                    ++stats.out_of_bounds_pixels;
+                    if (diagnosticLabel) diagnosticPixels[index] = PackBgra(1.0f, 1.0f, 0.0f);
+                } else if (previousSurfaceAvailable) {
+                    ++stats.surface_mismatch_pixels;
+                    if (currentSurface == 1u && previousSurface == 2u) ++stats.disoccluded_background_pixels;
+                    if (diagnosticLabel) diagnosticPixels[index] = PackBgra(1.0f, 0.0f, 0.0f);
+                } else if (diagnosticLabel) {
+                    diagnosticPixels[index] = PackBgra(0.25f, 0.25f, 0.25f);
+                }
+            }
+        }
+    }
+
+    if (diagnosticLabel) {
+        WriteBitmap32(std::string("ltr_diag_") + diagnosticLabel + "_history_validity.bmp", diagnosticPixels);
+    }
+    g_previous_surface_ids = std::move(currentSurfaceIds);
+
+    g_context->Unmap(surfaceReadback.Get(), 0);
     g_context->Unmap(motionReadback.Get(), 0);
     g_context->Unmap(depthReadback.Get(), 0);
     return stats;
@@ -588,7 +710,8 @@ ReconstructionStats ReadbackReconstructionComparison(const char* diagnosticLabel
 const wchar_t* ScenarioName() {
     switch (g_scenario) {
     case Scenario::static_scene: return L"static"; case Scenario::camera_translate: return L"camera-translate";
-    case Scenario::camera_rotate: return L"camera-rotate"; case Scenario::rigid_object: return L"rigid-object"; default: return L"unknown";
+    case Scenario::camera_rotate: return L"camera-rotate"; case Scenario::rigid_object: return L"rigid-object";
+    case Scenario::disocclusion: return L"disocclusion"; default: return L"unknown";
     }
 }
 
@@ -604,7 +727,7 @@ const wchar_t* ViewName() {
 
 void UpdateTitle() {
     wchar_t title[384]{};
-    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-4 scenario, Tab debug, R reset",
+    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-5 scenario, Tab debug, R reset",
                ScenarioName(), ViewName(), static_cast<unsigned long long>(g_last_frame.identity.frame_index),
                g_last_frame.identity.history_generation, g_last_frame.jitter_x_pixels, g_last_frame.jitter_y_pixels);
     SetWindowTextW(g_window, title);
@@ -629,6 +752,8 @@ void Render(double seconds) {
         const float a = std::sin(t * 0.45f) * 0.55f; eye = XMVectorSet(std::sin(a) * 5.0f, 1.4f, -std::cos(a) * 5.0f, 1.0f);
     } else if (g_scenario == Scenario::rigid_object) {
         world = XMMatrixRotationY(t) * XMMatrixTranslation(std::sin(t) * 1.5f, 0.0f, 0.0f);
+    } else if (g_scenario == Scenario::disocclusion) {
+        world = XMMatrixTranslation(-1.6f + 3.2f * t, 0.0f, 0.0f);
     }
 
     const XMMATRIX view = XMMatrixLookAtLH(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
@@ -649,7 +774,13 @@ void Render(double seconds) {
     g_last_frame.motion.jitter_included = false;
 
     XMMATRIX previousWorld = g_previous_world, previousVp = g_previous_vp;
-    if (!g_previous_valid || g_pending_reset != ltr::harness::HistoryResetReason::none) { previousWorld = world; previousVp = vp; }
+    g_last_previous_jitter_x = g_previous_jitter_x;
+    g_last_previous_jitter_y = g_previous_jitter_y;
+    if (!g_previous_valid || g_pending_reset != ltr::harness::HistoryResetReason::none) {
+        previousWorld = world; previousVp = vp;
+        g_last_previous_jitter_x = jitterX;
+        g_last_previous_jitter_y = jitterY;
+    }
 
     const XMVECTOR probeLocal = XMVectorSet(0.7f, 0.5f, 0.0f, 1.0f);
     const XMVECTOR currentProbeClip = XMVector4Transform(XMVector4Transform(probeLocal, world), vp);
@@ -663,14 +794,14 @@ void Render(double seconds) {
     const float sceneClear[4]{0.035f, 0.045f, 0.065f, 1.0f}; const float motionClear[4]{};
     g_context->ClearRenderTargetView(g_scene_color_rtv.Get(), sceneClear); g_context->ClearRenderTargetView(g_motion_rtv.Get(), motionClear);
     g_context->ClearDepthStencilView(g_depth_dsv.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
-    ID3D11RenderTargetView* sceneTargets[2]{g_scene_color_rtv.Get(), g_motion_rtv.Get()};
-    g_context->OMSetRenderTargets(2, sceneTargets, g_depth_dsv.Get());
+    ID3D11RenderTargetView* sceneTargets[3]{g_scene_color_rtv.Get(), g_motion_rtv.Get(), g_surface_id_rtv.Get()};
+    g_context->OMSetRenderTargets(3, sceneTargets, g_depth_dsv.Get());
     D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(g_width), static_cast<float>(g_height), 0.0f, 1.0f}; g_context->RSSetViewports(1, &viewport);
     const UINT stride = sizeof(Vertex), offset = 0; ID3D11Buffer* vb = g_vertex_buffer.Get();
     g_context->IASetInputLayout(g_input_layout.Get()); g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     g_context->IASetVertexBuffers(0, 1, &vb, &stride, &offset); g_context->VSSetShader(g_scene_vs.Get(), nullptr, 0); g_context->PSSetShader(g_scene_ps.Get(), nullptr, 0);
-    UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp); g_context->Draw(3, 0);
-    UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp); g_context->Draw(3, 3);
+    UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp, 2u); g_context->Draw(3, 0);
+    UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp, 1u); g_context->Draw(3, 3);
 
     g_context->OMSetRenderTargets(0, nullptr, nullptr);
     const float reconstructedClear[4]{};
@@ -700,7 +831,7 @@ void Render(double seconds) {
 
     g_context->OMSetRenderTargets(0, nullptr, nullptr); ID3D11RenderTargetView* backbuffer = g_backbuffer_rtv.Get(); g_context->OMSetRenderTargets(1, &backbuffer, nullptr);
     g_context->IASetInputLayout(nullptr); g_context->VSSetShader(g_debug_vs.Get(), nullptr, 0); g_context->PSSetShader(g_debug_ps.Get(), nullptr, 0);
-    DebugConstants debug{}; debug.mode = static_cast<std::uint32_t>(g_debug_view); debug.motion_scale = 128.0f;
+    DebugConstants debug{}; debug.mode = static_cast<std::uint32_t>(g_debug_view);
     D3D11_MAPPED_SUBRESOURCE mapped{}; CheckHr(g_context->Map(g_debug_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map(debug)");
     std::memcpy(mapped.pData, &debug, sizeof(debug)); g_context->Unmap(g_debug_buffer.Get(), 0);
     ID3D11Buffer* debugBuffer = g_debug_buffer.Get(); g_context->PSSetConstantBuffers(0, 1, &debugBuffer);
@@ -709,7 +840,9 @@ void Render(double seconds) {
     ID3D11ShaderResourceView* nullSrvs[4]{}; g_context->PSSetShaderResources(0, 4, nullSrvs);
     CheckHr(g_swap_chain->Present(g_self_test ? 0u : 1u, 0), "Present");
 
-    g_previous_world = world; g_previous_vp = vp; g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
+    g_previous_world = world; g_previous_vp = vp;
+    g_previous_jitter_x = jitterX; g_previous_jitter_y = jitterY;
+    g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
     ++g_frame_index; UpdateTitle();
 }
 
@@ -740,6 +873,40 @@ void AppendReconstructionStats(std::ostringstream& report, const char* label, co
            << " max_reconstructed_motion=" << stats.max_reconstructed_motion
            << " mean_error=" << stats.mean_error
            << " max_error=" << stats.max_error << '\n';
+}
+
+void AppendHistoryValidityStats(std::ostringstream& report, const char* label, const char* phase,
+                                const HistoryValidityStats& stats, bool ok) {
+    report << (ok ? "PASS " : "FAIL ") << label << ' ' << phase << " history-validity"
+           << " active=" << stats.active_pixels
+           << " valid=" << stats.valid_pixels
+           << " invalid=" << stats.invalid_pixels
+           << " mismatch=" << stats.surface_mismatch_pixels
+           << " out_of_bounds=" << stats.out_of_bounds_pixels
+           << " disoccluded_background=" << stats.disoccluded_background_pixels << '\n';
+}
+
+bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvailable, Scenario scenario) {
+    const std::uint64_t minimumActive = static_cast<std::uint64_t>(g_width) * g_height / 100u;
+    if (stats.active_pixels < minimumActive) return false;
+    if (stats.valid_pixels + stats.invalid_pixels != stats.active_pixels) return false;
+
+    if (!historyAvailable) {
+        return stats.valid_pixels == 0 && stats.invalid_pixels == stats.active_pixels &&
+               stats.surface_mismatch_pixels == 0 && stats.out_of_bounds_pixels == 0 &&
+               stats.disoccluded_background_pixels == 0;
+    }
+
+    if (stats.surface_mismatch_pixels + stats.out_of_bounds_pixels != stats.invalid_pixels) return false;
+    if (scenario == Scenario::static_scene) {
+        return stats.valid_pixels >= (stats.active_pixels * 999u) / 1000u &&
+               stats.disoccluded_background_pixels <= stats.active_pixels / 1000u;
+    }
+    if (scenario == Scenario::rigid_object || scenario == Scenario::disocclusion) {
+        return stats.valid_pixels >= (stats.active_pixels * 9u) / 10u &&
+               stats.disoccluded_background_pixels > stats.active_pixels / 100u;
+    }
+    return stats.valid_pixels >= (stats.active_pixels * 95u) / 100u;
 }
 
 bool ValidateReconstruction(const ReconstructionStats& stats, bool expectCameraMotion,
@@ -782,31 +949,37 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     g_scenario = scenario;
     g_pending_reset = ltr::harness::HistoryResetReason::scenario_change;
     const bool expectCameraMotion = scenario == Scenario::camera_translate || scenario == Scenario::camera_rotate;
-    const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object;
+    const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object || scenario == Scenario::disocclusion;
     const std::uint32_t expectedGeneration = g_history_generation + 1u;
 
     Render(0.0);
     const ReadbackStats resetStats = ReadbackGroundTruth();
     const ReconstructionStats resetReconstructionStats = ReadbackReconstructionComparison();
+    const HistoryValidityStats resetHistoryStats = ReadbackHistoryValidity(false);
     const bool resetReconstructionOk = ValidateReconstruction(resetReconstructionStats, false, false);
+    const bool resetHistoryOk = ValidateHistoryValidity(resetHistoryStats, false, scenario);
     const bool resetOk = g_last_frame.identity.history_generation == expectedGeneration &&
                          g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::scenario_change &&
-                         ValidateStats(resetStats, false, false) && resetReconstructionOk;
+                         ValidateStats(resetStats, false, false) && resetReconstructionOk && resetHistoryOk;
     AppendStats(report, name, "reset", resetStats, resetOk);
     AppendReconstructionStats(report, name, "reset", resetReconstructionStats, resetReconstructionOk);
+    AppendHistoryValidityStats(report, name, "reset", resetHistoryStats, resetHistoryOk);
 
     const std::uint64_t expectedFrame = g_last_frame.identity.frame_index + 1u;
     Render(secondTime);
     const ReadbackStats steadyStats = ReadbackGroundTruth(name);
     const ReconstructionStats steadyReconstructionStats = ReadbackReconstructionComparison(name);
+    const HistoryValidityStats steadyHistoryStats = ReadbackHistoryValidity(true, name);
     const bool steadyReconstructionOk =
         ValidateReconstruction(steadyReconstructionStats, expectCameraMotion, expectCameraOnlyLimitation);
+    const bool steadyHistoryOk = ValidateHistoryValidity(steadyHistoryStats, true, scenario);
     const bool steadyOk = g_last_frame.identity.frame_index == expectedFrame &&
                           g_last_frame.identity.history_generation == expectedGeneration &&
                           g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::none &&
-                          ValidateStats(steadyStats, expectMotion, requireStaticCoverage) && steadyReconstructionOk;
+                          ValidateStats(steadyStats, expectMotion, requireStaticCoverage) && steadyReconstructionOk && steadyHistoryOk;
     AppendStats(report, name, "steady", steadyStats, steadyOk);
     AppendReconstructionStats(report, name, "steady", steadyReconstructionStats, steadyReconstructionOk);
+    AppendHistoryValidityStats(report, name, "steady", steadyHistoryStats, steadyHistoryOk);
     return resetOk && steadyOk;
 }
 
@@ -821,6 +994,7 @@ bool RunDeterministicSelfTest() {
     ok &= RunScenarioCheck(Scenario::camera_translate, "camera-translate", 1.0, true, false, report);
     ok &= RunScenarioCheck(Scenario::camera_rotate, "camera-rotate", 1.0, true, false, report);
     ok &= RunScenarioCheck(Scenario::rigid_object, "rigid-object", 1.0, true, true, report);
+    ok &= RunScenarioCheck(Scenario::disocclusion, "disocclusion", 1.0, true, true, report);
     report << (ok ? "RESULT PASS\n" : "RESULT FAIL\n");
 
     std::ofstream output("ltr_harness_selftest.txt", std::ios::trunc);
@@ -839,7 +1013,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         else if (wParam == VK_TAB) g_debug_view = static_cast<DebugView>((static_cast<std::uint32_t>(g_debug_view) + 1u) % static_cast<std::uint32_t>(DebugView::count));
         else if (wParam == 'R') g_pending_reset = ltr::harness::HistoryResetReason::manual;
-        else if (wParam >= '1' && wParam <= '4') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
+        else if (wParam >= '1' && wParam <= '5') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
         return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, wParam, lParam);
