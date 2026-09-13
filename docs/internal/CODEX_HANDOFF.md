@@ -53,9 +53,11 @@ Treat this as a hypothesis until the first probes are complete.
 - OptiScaler stable observed: `v0.9.4` / `7534ad0`.
 - ReShade ecosystem version observed: 6.8.0; GitHub commit history seen through 2026-09-10 (`a33de92` shown for that date).
 
-## Environment limitation encountered
+## Repository publication
 
-The outer environment blocked direct `git clone` of research repositories and also blocked `git init` through the command tool. Research therefore used current public repository/documentation views, while repository files were created through the native patch mechanism. Re-check Git initialization status before assuming this workspace is already a Git repository.
+- Git is initialized on `main`.
+- `origin` points to `https://github.com/rubocopter/LTR-Bridge.git`.
+- The initial research/bootstrap documentation is published to GitHub.
 
 ## Do not do next
 
