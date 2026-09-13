@@ -26,13 +26,15 @@ This order is a research hypothesis, not a permanent product architecture.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — candidate architecture and decision gates.
 - [ROADMAP.md](ROADMAP.md) — staged research and prototype plan.
-- [docs/RESEARCH.md](docs/RESEARCH.md) — first-pass findings and evidence status.
+- [docs/RESEARCH.md](docs/RESEARCH.md) — research findings and evidence status.
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — evidence-based compatibility matrix.
 - [docs/TEMPORAL_CONTRACT.md](docs/TEMPORAL_CONTRACT.md) — provisional temporal contract analysis.
 - [docs/X86_X64_BRIDGE.md](docs/X86_X64_BRIDGE.md) — cross-bitness resource/synchronization findings.
 - [docs/VR.md](docs/VR.md) — VR constraints and per-eye requirements.
-- [docs/D3D9.md](docs/D3D9.md) and [docs/D3D10.md](docs/D3D10.md) — API-specific research.
+- [docs/D3D8.md](docs/D3D8.md), [docs/D3D9.md](docs/D3D9.md) and [docs/D3D10.md](docs/D3D10.md) — API-specific research.
 - [docs/MOTION_VECTORS.md](docs/MOTION_VECTORS.md) — motion-vector strategies and gaps.
+- [docs/DEPTH.md](docs/DEPTH.md) — depth discovery, preservation and semantic requirements.
+- [docs/JITTER.md](docs/JITTER.md) — projection-jitter requirements and legacy injection constraints.
 - [docs/REFERENCES.md](docs/REFERENCES.md) — research snapshot and source versions.
 
 ## Validation vocabulary
