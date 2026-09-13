@@ -1,5 +1,6 @@
 build/
 build-root/
+build-optical/
 out/
 .vs/
 .vscode/

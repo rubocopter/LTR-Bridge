@@ -1,6 +1,6 @@
 # Codex handoff
 
-Updated: 2026-09-13.
+Updated: 2026-09-14.
 
 ## Repository state
 
@@ -101,16 +101,20 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 11. **Implemented:** visible draws now emit stable per-surface identity. The self-test reprojects each current active pixel with renderer ground-truth MV plus the previous/current jitter delta and checks whether it maps in-bounds to the same previous surface. For the current controlled planar surfaces, this produces an explicit ground-truth history-validity/disocclusion oracle independent of the camera+depth provider; broader geometry will require stronger identity/depth tests.
 12. **Host-tested:** reset frames reject all active history; static steady keeps 232,423/232,455 pixels valid; camera translation 221,639/223,941; camera rotation 215,564/219,379. Rigid-object motion marks 13,375 background pixels as disoccluded; the dedicated disocclusion scenario marks 3,059. CTest now enforces reset invalidation, >99.9% static validity, >95% camera validity, and >1% newly revealed background for the object/disocclusion cases.
 13. **Visual-validated:** history-validity BMPs were inspected. The dedicated case rejects the floor region uncovered by object translation, the rigid case rejects the larger revealed region from translation+rotation, and static is valid apart from a minimal raster/jitter boundary.
-14. **Experiment-pending:** remaining content cases, optical flow, native-AA backend mapping, frame-time/VRAM measurement, SR, and stereo.
+14. **Implemented:** `src/optical_flow` is a separate CPU/synthetic image-space baseline. It generates textured current/previous frame pairs with known current->previous truth, runs hierarchical luminance block matching from a 1/64 pyramid to full resolution on a 1/8 output grid, and computes confidence from match cost, local texture and uniqueness. Renderer depth, matrices and surface identity are not inputs to the estimator; truth/invalid masks are evaluation-only.
+15. **Host-tested:** the standalone and root-integrated probe passes deterministic static, camera-translation, camera-rotation, rigid-object and disocclusion scenarios. <=4 px valid accuracy is 100.000%, 78.919%, 84.196%, 95.675% and 96.927% respectively; confident-valid accuracy is 100.000%, 90.302%, 90.263%, 98.706% and 99.449%. Camera translation remains the weakest controlled case at 4.580 px confident mean error. Confidence separates valid from invalid samples in the moving/disocclusion cases.
+16. **Visual-validated:** the controlled optical-flow disocclusion diagnostics localize the invalid/revealed region and reduce confidence there. Camera translation still contains isolated/border errors. This claim is limited to the generated synthetic diagnostics and is not evidence of production optical-flow quality, game support or runtime performance.
+17. **Verified:** current LumeniteFX was inspected at `umar-afzaal/LumeniteFX@f8cbbb4eccfcb7adf0d74bb358ba349272e3c1e9` (`https://github.com/umar-afzaal/LumeniteFX`). Its optical-flow path is substantially more complex than this first probe, using pyramidal matching, refinement and temporal confidence; its NOTICE cites FidelityFX Optical Flow 1.1.2, Zenteon (August 2025) and VPP as studied/influential sources. LTR Bridge keeps it as an external reference and does not copy that implementation into the baseline.
+18. **Experiment-pending:** remaining content cases, real-content optical-flow validation, native-AA backend mapping, frame-time/VRAM measurement, SR, and stereo.
 
 ## Next concrete work
 
 1. Re-inspect repository state and this handoff.
-2. Continue Phase 1 from the validated renderer-ground-truth and camera+depth baselines: add a minimal optical-flow baseline with explicit validity/confidence diagnostics and compare it against the same controlled cases.
+2. Continue Phase 1 from the validated renderer-ground-truth, camera+depth and synthetic optical-flow baselines: expand controlled content coverage and then introduce the first native-resolution AA backend only after the diagnostics remain trustworthy.
 3. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
 4. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
 5. Expand controlled content coverage with small deterministic cases for the currently excluded skinned/cloth-like motion, particles/transparency and HUD/highlight behavior before treating any provider as broadly representative. The dedicated disocclusion/history-validity case is now implemented.
-6. Add an optical-flow baseline beside ground truth and camera+depth motion so quality loss is measurable rather than anecdotal, then introduce the first native-resolution AA backend only after those diagnostics are trustworthy.
+6. Use the independent optical-flow baseline beside ground truth and camera+depth motion to quantify quality loss; next validate harder controlled content and then introduce the first native-resolution AA backend.
 7. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe. From the first stereo-capable version, include two independent streams, distinct histories/resources, deterministic readback and cross-eye contamination detection.
 8. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
 9. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.
@@ -126,6 +130,7 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 - XeSS SDK current observed: `v3.0.2` / `8fe81bd`.
 - AMD FSR SDK current observed: `2.3.0`.
 - ReShade ecosystem version observed: 6.8.0; GitHub commit history previously seen through 2026-09-10 (`a33de92` shown for that date).
+- LumeniteFX optical-flow reference inspected: `f8cbbb4eccfcb7adf0d74bb358ba349272e3c1e9`.
 
 ## Repository publication
 

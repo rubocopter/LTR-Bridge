@@ -13,9 +13,9 @@ jobs:
         run: cmake -S . -B build -A x64
       - name: Build Release
         run: cmake --build build --config Release
-      - name: Run deterministic readback test
+      - name: Run deterministic probes
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Upload deterministic readback report
+      - name: Upload deterministic probe reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -23,4 +23,6 @@ jobs:
           path: |
             build/cmake/ltr_harness_selftest.txt
             build/cmake/ltr_diag_*.bmp
+            build/src/optical_flow/ltr_optical_flow_probe.txt
+            build/src/optical_flow/ltr_diag_optical_*.bmp
           if-no-files-found: warn

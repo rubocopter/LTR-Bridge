@@ -1,6 +1,6 @@
 # D3D11 x64 temporal harness
 
-Status: **implemented, host-tested and visual-validated for the current static/camera/rigid-object/disocclusion ground-truth, history-validity and camera+depth cases; performance validation pending**.
+Status: **implemented, host-tested and visual-validated for the current static/camera/rigid-object/disocclusion ground-truth, history-validity, camera+depth and synthetic optical-flow cases; performance validation pending**.
 
 The Phase 1 harness is a controlled D3D11 x64 research renderer. It separates renderer projection jitter from ground-truth camera/rigid-object motion, exposes scene/depth/motion diagnostics, and now includes a camera+depth reconstruction baseline that can be compared directly against renderer ground truth.
 
@@ -27,6 +27,12 @@ The harness also emits a ground-truth history-validity mask. Each visible draw w
 
 The generated validity masks were inspected: reusable history is green and rejected history red/yellow; the dedicated disocclusion mask places the rejected region on the floor area exposed by the translated object, while the static mask is green apart from a minimal raster/jitter boundary. This is **visual-validated** evidence for the controlled history-validity oracle, not a claim about any future optical-flow confidence estimator.
 
+The repository now also contains an independent CPU optical-flow probe under `src/optical_flow`. It deliberately does not consume renderer depth, matrices, surface identity, or renderer motion when estimating flow. It generates textured synthetic current/previous frame pairs with known current-pixel -> previous-pixel motion and evaluates a hierarchical luminance block matcher from a 1/64 pyramid to full resolution on a 1/8 output grid. Ground truth and invalid/disoccluded masks are used only for evaluation. Confidence combines matching cost, local texture and match uniqueness.
+
+The optical-flow scenarios are static, camera translation, camera rotation, rigid-object motion and disocclusion. The deterministic probe is **implemented** and **host-tested** through the root CTest suite. The current controlled run reports <=4 px accuracy of 100.000% static, 78.919% camera translation, 84.196% camera rotation, 95.675% rigid-object and 96.927% disocclusion; restricting evaluation to confident valid samples raises those values to 100.000%, 90.302%, 90.263%, 98.706% and 99.449% respectively. Camera translation remains the weakest case, with 4.580 px confident mean error. These values are a synthetic baseline, not evidence of production optical-flow quality or game support.
+
+The probe writes `ltr_optical_flow_probe.txt` plus flow, confidence and error BMPs for every scenario. The disocclusion diagnostics were inspected and show confidence falling in the expected invalid/revealed region; camera translation still contains isolated and border errors. That narrow diagnostic observation is **visual-validated** for the controlled synthetic cases. No **performance-validated**, **live-tested** or game-level claim follows from this probe.
+
 Controls are `1` static scene, `2` camera translation, `3` camera rotation, `4` rigid-object motion, `5` dedicated disocclusion, `Tab` diagnostic view (scene, depth, renderer motion, reconstructed motion), `R` history reset, and `Esc` exit.
 
-Performance, skinned/cloth/particle/transparency/HUD cases, optical flow, reconstruction backends, SR, and stereo validation remain pending.
+Performance, skinned/cloth/particle/transparency/HUD cases, reconstruction backends, SR, stereo validation and real-content optical-flow validation remain pending.
