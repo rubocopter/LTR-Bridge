@@ -10,7 +10,8 @@ States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`,
 | D3D11 x86 -> D3D12 x64 host | planned | no translation expected | observed-upstream | unknown | unknown | unknown | DLSS5-Feeder demonstrates GPU-resident cross-bitness transport. |
 | D3D10 x86 -> D3D11 relay -> x64 host | planned | observed-upstream relay | observed-upstream | unknown | unknown | unknown | Current DLSS5-Feeder D3D10 route. |
 | D3D10 direct to modern host | unknown | n/a | unknown | unknown | unknown | unknown | D3D10 lacks the D3D11 NT-handle/fence path used by current bridge designs. |
-| D3D9 direct interception + custom relay | planned | planned relay research | unknown | unknown | unknown | unknown | D3D9 sharing exists but cannot simply be opened as D3D12 resources. |
+| D3D9 classic -> D3D11 relay | planned | documented interop, runtime applicability unresolved | unknown | unknown | unknown | unknown | `OpenSharedResource` documents D3D9->D3D11 textures, while broader Microsoft guidance says shared surfaces require D3D9Ex. Local probe required. |
+| D3D9Ex -> D3D11 relay | planned | documented platform path | possible downstream | unknown | unknown | unknown | D3D9Ex unsynchronized sharing is documented; format/usage restrictions still require purpose-built relay textures and explicit sync. |
 | D3D9 -> dgVoodoo2 -> D3D11 | planned comparison | observed-upstream | observed-upstream downstream | observed-upstream in Feeder-style stack | not demonstrated as real SR | unknown | Existing community tooling uses this route. |
 | D3D8 native | unknown | planned | unknown | unknown | unknown | unknown | Requires D3D8-specific investigation. |
 | D3D8 -> dgVoodoo2 -> D3D11 | planned | observed in ecosystem | possible downstream | unknown | unknown | unknown | Deployment tools use this route; LTR Bridge has not validated it. |
@@ -20,9 +21,9 @@ States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`,
 
 | Backend family | Current useful API evidence | Legacy relevance |
 | --- | --- | --- |
-| NVIDIA DLSS/DLAA via modern SDK path | Modern D3D11/D3D12/Vulkan-era integration with explicit temporal inputs | Requires adapter/provider work to synthesize missing legacy inputs; x86 may require helper depending on component availability. |
-| FidelityFX temporal upscaling | Modern temporal input contract with depth/MV/jitter and optional reactive information | Potential backend after a legacy provider exists; does not solve extraction itself. |
-| XeSS-SR / Native AA | D3D11, D3D12, Vulkan documented; Native AA provides 1.0x mode | Attractive second controlled 1:1 backend; still needs valid legacy temporal data. |
+| NVIDIA DLSS/DLAA via Streamline/NGX | Streamline currently targets 64-bit Windows and modern D3D11/D3D12/Vulkan-era integration with explicit temporal inputs | Strong reason for an x64 modern host when the source game is x86; still requires correct legacy data extraction. |
+| FidelityFX temporal upscaling | Current FSR SDK is 2.3.0; the current FSR API is delivered through signed DLLs and documents backend-specific functionality through DX12 | Useful D3D12-host backend candidate after a legacy provider exists; x86 binary availability remains an explicit artifact/probe question. |
+| XeSS-SR / Native AA | XeSS SDK 3.0.2 requires Windows x64; D3D12 is cross-vendor, while its documented D3D11 SR path is limited to Intel Arc or later; Native AA provides 1.0x | Favors a D3D12 x64 host for a generic cross-vendor backend; still needs valid legacy temporal data. |
 | OptiScaler | D3D11/D3D12/Vulkan; expects existing DLSS2+/FSR2+/XeSS-like hooks/contracts | Useful backend/ecosystem reference, not the legacy extraction solution. |
 
 Compatibility claims are scoped by source API, bitness, architecture, GPU/driver where relevant, backend, and flat/VR mode. A single upstream game report or local synthetic probe does not justify `supported`.
