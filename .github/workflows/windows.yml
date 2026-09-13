@@ -20,5 +20,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: temporal-harness-selftest
-          path: build/cmake/ltr_harness_selftest.txt
+          path: |
+            build/cmake/ltr_harness_selftest.txt
+            build/cmake/ltr_diag_*.bmp
           if-no-files-found: warn

@@ -18,7 +18,9 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -29,7 +31,7 @@ constexpr wchar_t kWindowClass[] = L"LTRBridgeTemporalHarness";
 constexpr wchar_t kWindowTitle[] = L"LTR Bridge - D3D11 x64 Temporal Harness";
 
 enum class Scenario : std::uint32_t { static_scene = 0, camera_translate, camera_rotate, rigid_object, count };
-enum class DebugView : std::uint32_t { scene = 0, depth, motion, count };
+enum class DebugView : std::uint32_t { scene = 0, depth, motion, reconstructed_motion, count };
 
 struct Vertex { XMFLOAT3 position; XMFLOAT3 color; };
 
@@ -49,8 +51,17 @@ struct DebugConstants {
     float padding[2]{};
 };
 
+struct ReconstructConstants {
+    XMFLOAT4X4 inverse_current_vp_jittered;
+    XMFLOAT4X4 current_vp_unjittered;
+    XMFLOAT4X4 previous_vp_unjittered;
+    XMFLOAT2 render_size;
+    XMFLOAT2 padding{};
+};
+
 static_assert(sizeof(PerDrawConstants) % 16 == 0);
 static_assert(sizeof(DebugConstants) % 16 == 0);
+static_assert(sizeof(ReconstructConstants) % 16 == 0);
 
 HWND g_window = nullptr;
 std::uint32_t g_width = 1280;
@@ -79,6 +90,9 @@ ComPtr<ID3D11ShaderResourceView> g_scene_color_srv;
 ComPtr<ID3D11Texture2D> g_motion;
 ComPtr<ID3D11RenderTargetView> g_motion_rtv;
 ComPtr<ID3D11ShaderResourceView> g_motion_srv;
+ComPtr<ID3D11Texture2D> g_reconstructed_motion;
+ComPtr<ID3D11RenderTargetView> g_reconstructed_motion_rtv;
+ComPtr<ID3D11ShaderResourceView> g_reconstructed_motion_srv;
 ComPtr<ID3D11Texture2D> g_depth;
 ComPtr<ID3D11DepthStencilView> g_depth_dsv;
 ComPtr<ID3D11ShaderResourceView> g_depth_srv;
@@ -86,10 +100,12 @@ ComPtr<ID3D11VertexShader> g_scene_vs;
 ComPtr<ID3D11PixelShader> g_scene_ps;
 ComPtr<ID3D11VertexShader> g_debug_vs;
 ComPtr<ID3D11PixelShader> g_debug_ps;
+ComPtr<ID3D11PixelShader> g_reconstruct_ps;
 ComPtr<ID3D11InputLayout> g_input_layout;
 ComPtr<ID3D11Buffer> g_vertex_buffer;
 ComPtr<ID3D11Buffer> g_per_draw_buffer;
 ComPtr<ID3D11Buffer> g_debug_buffer;
+ComPtr<ID3D11Buffer> g_reconstruct_buffer;
 ComPtr<ID3D11SamplerState> g_sampler;
 
 struct ReadbackStats {
@@ -99,6 +115,48 @@ struct ReadbackStats {
     float max_motion = 0.0f;
     double mean_motion = 0.0;
 };
+
+struct ReconstructionStats {
+    std::uint64_t active_pixels = 0;
+    std::uint64_t ground_truth_moving_pixels = 0;
+    std::uint64_t reconstructed_moving_pixels = 0;
+    std::uint64_t close_pixels = 0;
+    std::uint64_t camera_only_miss_pixels = 0;
+    float max_error = 0.0f;
+    float max_reconstructed_motion = 0.0f;
+    double mean_error = 0.0;
+    double mean_reconstructed_motion = 0.0;
+};
+
+std::uint8_t ToByte(float value) {
+    return static_cast<std::uint8_t>(std::lround((std::clamp)(value, 0.0f, 1.0f) * 255.0f));
+}
+
+std::uint32_t PackBgra(float red, float green, float blue) {
+    return 0xFF000000u | (static_cast<std::uint32_t>(ToByte(red)) << 16u) |
+           (static_cast<std::uint32_t>(ToByte(green)) << 8u) | static_cast<std::uint32_t>(ToByte(blue));
+}
+
+void WriteBitmap32(const std::string& path, const std::vector<std::uint32_t>& pixels) {
+    BITMAPFILEHEADER fileHeader{};
+    BITMAPINFOHEADER infoHeader{};
+    const std::uint32_t dataSize = g_width * g_height * sizeof(std::uint32_t);
+    fileHeader.bfType = 0x4D42;
+    fileHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+    fileHeader.bfSize = fileHeader.bfOffBits + dataSize;
+    infoHeader.biSize = sizeof(BITMAPINFOHEADER);
+    infoHeader.biWidth = static_cast<LONG>(g_width);
+    infoHeader.biHeight = -static_cast<LONG>(g_height);
+    infoHeader.biPlanes = 1;
+    infoHeader.biBitCount = 32;
+    infoHeader.biCompression = BI_RGB;
+    infoHeader.biSizeImage = dataSize;
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
+    output.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
+    output.write(reinterpret_cast<const char*>(pixels.data()), static_cast<std::streamsize>(dataSize));
+}
 
 [[noreturn]] void ThrowHr(const char* operation, HRESULT hr) {
     char message[256]{};
@@ -188,6 +246,7 @@ constexpr std::string_view kDebugShader = R"hlsl(
 Texture2D<float4> sceneTexture : register(t0);
 Texture2D<float> depthTexture : register(t1);
 Texture2D<float2> motionTexture : register(t2);
+Texture2D<float2> reconstructedMotionTexture : register(t3);
 SamplerState linearClamp : register(s0);
 cbuffer DebugConstants : register(b0) {
     uint mode;
@@ -209,20 +268,55 @@ float4 DebugPS(VSOut input) : SV_Target0 {
         float visual = saturate((1.0 - depth) * 12.0);
         return float4(visual.xxx, 1.0);
     }
-    float2 motion = motionTexture.Sample(linearClamp, input.uv);
+    float2 motion = mode == 2 ? motionTexture.Sample(linearClamp, input.uv)
+                              : reconstructedMotionTexture.Sample(linearClamp, input.uv);
     float2 signedMotion = clamp(motion / motionScale, -1.0, 1.0);
     float magnitude = saturate(length(motion) / motionScale);
     return float4(0.5 + 0.5 * signedMotion.x, 0.5 + 0.5 * signedMotion.y, magnitude, 1.0);
 }
 )hlsl";
 
+constexpr std::string_view kReconstructShader = R"hlsl(
+Texture2D<float> depthTexture : register(t0);
+cbuffer ReconstructConstants : register(b0) {
+    row_major float4x4 inverseCurrentVpJittered;
+    row_major float4x4 currentVpUnjittered;
+    row_major float4x4 previousVpUnjittered;
+    float2 renderSize;
+    float2 padding;
+};
+struct PSIn { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+float2 ReconstructPS(PSIn input) : SV_Target0 {
+    int2 pixel = int2(input.position.xy);
+    float depth = depthTexture.Load(int3(pixel, 0));
+    if (depth >= 0.99999) return float2(0.0, 0.0);
+
+    float2 currentNdc = float2((input.position.x / renderSize.x) * 2.0 - 1.0,
+                               1.0 - (input.position.y / renderSize.y) * 2.0);
+    float4 currentClipJittered = float4(currentNdc, depth, 1.0);
+    float4 world = mul(currentClipJittered, inverseCurrentVpJittered);
+    world /= world.w;
+
+    float4 currentClip = mul(world, currentVpUnjittered);
+    float4 previousClip = mul(world, previousVpUnjittered);
+    float2 currentUnjitteredNdc = currentClip.xy / currentClip.w;
+    float2 previousNdc = previousClip.xy / previousClip.w;
+    float2 currentPixels = float2((currentUnjitteredNdc.x * 0.5 + 0.5) * renderSize.x,
+                                  (-currentUnjitteredNdc.y * 0.5 + 0.5) * renderSize.y);
+    float2 previousPixels = float2((previousNdc.x * 0.5 + 0.5) * renderSize.x,
+                                   (-previousNdc.y * 0.5 + 0.5) * renderSize.y);
+    return previousPixels - currentPixels;
+}
+)hlsl";
+
 void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
-    ID3D11ShaderResourceView* nullSrvs[3]{};
-    g_context->PSSetShaderResources(0, 3, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[4]{};
+    g_context->PSSetShaderResources(0, 4, nullSrvs);
     g_context->OMSetRenderTargets(0, nullptr, nullptr);
     g_backbuffer_rtv.Reset();
     g_scene_color.Reset(); g_scene_color_rtv.Reset(); g_scene_color_srv.Reset();
     g_motion.Reset(); g_motion_rtv.Reset(); g_motion_srv.Reset();
+    g_reconstructed_motion.Reset(); g_reconstructed_motion_rtv.Reset(); g_reconstructed_motion_srv.Reset();
     g_depth.Reset(); g_depth_dsv.Reset(); g_depth_srv.Reset();
 
     CheckHr(g_swap_chain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0), "ResizeBuffers");
@@ -242,6 +336,9 @@ void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
     CheckHr(g_device->CreateTexture2D(&color, nullptr, &g_motion), "CreateTexture2D(motion)");
     CheckHr(g_device->CreateRenderTargetView(g_motion.Get(), nullptr, &g_motion_rtv), "CreateRTV(motion)");
     CheckHr(g_device->CreateShaderResourceView(g_motion.Get(), nullptr, &g_motion_srv), "CreateSRV(motion)");
+    CheckHr(g_device->CreateTexture2D(&color, nullptr, &g_reconstructed_motion), "CreateTexture2D(reconstructed motion)");
+    CheckHr(g_device->CreateRenderTargetView(g_reconstructed_motion.Get(), nullptr, &g_reconstructed_motion_rtv), "CreateRTV(reconstructed motion)");
+    CheckHr(g_device->CreateShaderResourceView(g_reconstructed_motion.Get(), nullptr, &g_reconstructed_motion_srv), "CreateSRV(reconstructed motion)");
 
     D3D11_TEXTURE2D_DESC depth{};
     depth.Width = width; depth.Height = height; depth.MipLevels = 1; depth.ArraySize = 1;
@@ -275,10 +372,12 @@ void CreateDeviceAndPipeline() {
     const auto scenePs = Compile(kSceneShader, "ScenePS", "ps_4_0");
     const auto debugVs = Compile(kDebugShader, "DebugVS", "vs_4_0");
     const auto debugPs = Compile(kDebugShader, "DebugPS", "ps_4_0");
+    const auto reconstructPs = Compile(kReconstructShader, "ReconstructPS", "ps_4_0");
     CheckHr(g_device->CreateVertexShader(sceneVs->GetBufferPointer(), sceneVs->GetBufferSize(), nullptr, &g_scene_vs), "CreateVertexShader");
     CheckHr(g_device->CreatePixelShader(scenePs->GetBufferPointer(), scenePs->GetBufferSize(), nullptr, &g_scene_ps), "CreatePixelShader");
     CheckHr(g_device->CreateVertexShader(debugVs->GetBufferPointer(), debugVs->GetBufferSize(), nullptr, &g_debug_vs), "CreateDebugVS");
     CheckHr(g_device->CreatePixelShader(debugPs->GetBufferPointer(), debugPs->GetBufferSize(), nullptr, &g_debug_ps), "CreateDebugPS");
+    CheckHr(g_device->CreatePixelShader(reconstructPs->GetBufferPointer(), reconstructPs->GetBufferSize(), nullptr, &g_reconstruct_ps), "CreateReconstructPS");
 
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(Vertex, position)), D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -298,6 +397,8 @@ void CreateDeviceAndPipeline() {
     CheckHr(g_device->CreateBuffer(&cb, nullptr, &g_per_draw_buffer), "CreateBuffer(per-draw)");
     cb.ByteWidth = sizeof(DebugConstants);
     CheckHr(g_device->CreateBuffer(&cb, nullptr, &g_debug_buffer), "CreateBuffer(debug)");
+    cb.ByteWidth = sizeof(ReconstructConstants);
+    CheckHr(g_device->CreateBuffer(&cb, nullptr, &g_reconstruct_buffer), "CreateBuffer(reconstruct)");
 
     D3D11_SAMPLER_DESC sampler{}; sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sampler.MaxLOD = D3D11_FLOAT32_MAX;
@@ -331,7 +432,7 @@ ComPtr<ID3D11Texture2D> CreateReadbackTexture(ID3D11Texture2D* source) {
     return staging;
 }
 
-ReadbackStats ReadbackGroundTruth() {
+ReadbackStats ReadbackGroundTruth(const char* diagnosticLabel = nullptr) {
     const auto depthReadback = CreateReadbackTexture(g_depth.Get());
     const auto motionReadback = CreateReadbackTexture(g_motion.Get());
     g_context->CopyResource(depthReadback.Get(), g_depth.Get());
@@ -348,6 +449,12 @@ ReadbackStats ReadbackGroundTruth() {
 
     ReadbackStats stats{};
     double motionSum = 0.0;
+    std::vector<std::uint32_t> depthPixels;
+    std::vector<std::uint32_t> motionPixels;
+    if (diagnosticLabel) {
+        depthPixels.resize(static_cast<std::size_t>(g_width) * g_height);
+        motionPixels.resize(static_cast<std::size_t>(g_width) * g_height);
+    }
     for (std::uint32_t y = 0; y < g_height; ++y) {
         const auto* depthRow = reinterpret_cast<const float*>(static_cast<const std::byte*>(depthMapped.pData) + y * depthMapped.RowPitch);
         const auto* motionRow = reinterpret_cast<const XMFLOAT2*>(static_cast<const std::byte*>(motionMapped.pData) + y * motionMapped.RowPitch);
@@ -365,10 +472,114 @@ ReadbackStats ReadbackGroundTruth() {
             stats.max_motion = (std::max)(stats.max_motion, magnitude);
             motionSum += magnitude;
             if (magnitude > 0.05f) ++stats.moving_pixels;
+            if (diagnosticLabel) {
+                const std::size_t index = static_cast<std::size_t>(y) * g_width + x;
+                const float depthVisual = std::pow((std::clamp)(1.0f - depth, 0.0f, 1.0f), 0.2f);
+                depthPixels[index] = PackBgra(depthVisual, depthVisual, depthVisual);
+                const float motionX = (std::clamp)(motionRow[x].x / 128.0f, -1.0f, 1.0f);
+                const float motionY = (std::clamp)(motionRow[x].y / 128.0f, -1.0f, 1.0f);
+                motionPixels[index] = PackBgra(0.5f + 0.5f * motionX, 0.5f + 0.5f * motionY,
+                                               (std::min)(magnitude / 128.0f, 1.0f));
+            }
         }
     }
     if (stats.active_pixels != 0) stats.mean_motion = motionSum / static_cast<double>(stats.active_pixels);
 
+    if (diagnosticLabel) {
+        const std::string prefix = std::string("ltr_diag_") + diagnosticLabel;
+        WriteBitmap32(prefix + "_depth.bmp", depthPixels);
+        WriteBitmap32(prefix + "_motion.bmp", motionPixels);
+    }
+
+    g_context->Unmap(motionReadback.Get(), 0);
+    g_context->Unmap(depthReadback.Get(), 0);
+    return stats;
+}
+
+ReconstructionStats ReadbackReconstructionComparison(const char* diagnosticLabel = nullptr) {
+    const auto depthReadback = CreateReadbackTexture(g_depth.Get());
+    const auto motionReadback = CreateReadbackTexture(g_motion.Get());
+    const auto reconstructedReadback = CreateReadbackTexture(g_reconstructed_motion.Get());
+    g_context->CopyResource(depthReadback.Get(), g_depth.Get());
+    g_context->CopyResource(motionReadback.Get(), g_motion.Get());
+    g_context->CopyResource(reconstructedReadback.Get(), g_reconstructed_motion.Get());
+
+    D3D11_MAPPED_SUBRESOURCE depthMapped{};
+    D3D11_MAPPED_SUBRESOURCE motionMapped{};
+    D3D11_MAPPED_SUBRESOURCE reconstructedMapped{};
+    CheckHr(g_context->Map(depthReadback.Get(), 0, D3D11_MAP_READ, 0, &depthMapped), "Map(depth comparison)");
+    HRESULT hr = g_context->Map(motionReadback.Get(), 0, D3D11_MAP_READ, 0, &motionMapped);
+    if (FAILED(hr)) {
+        g_context->Unmap(depthReadback.Get(), 0);
+        ThrowHr("Map(motion comparison)", hr);
+    }
+    hr = g_context->Map(reconstructedReadback.Get(), 0, D3D11_MAP_READ, 0, &reconstructedMapped);
+    if (FAILED(hr)) {
+        g_context->Unmap(motionReadback.Get(), 0);
+        g_context->Unmap(depthReadback.Get(), 0);
+        ThrowHr("Map(reconstructed comparison)", hr);
+    }
+
+    ReconstructionStats stats{};
+    double errorSum = 0.0;
+    double reconstructedSum = 0.0;
+    std::vector<std::uint32_t> reconstructedPixels;
+    std::vector<std::uint32_t> errorPixels;
+    if (diagnosticLabel) {
+        reconstructedPixels.resize(static_cast<std::size_t>(g_width) * g_height);
+        errorPixels.resize(static_cast<std::size_t>(g_width) * g_height);
+    }
+
+    for (std::uint32_t y = 0; y < g_height; ++y) {
+        const auto* depthRow = reinterpret_cast<const float*>(static_cast<const std::byte*>(depthMapped.pData) + y * depthMapped.RowPitch);
+        const auto* motionRow = reinterpret_cast<const XMFLOAT2*>(static_cast<const std::byte*>(motionMapped.pData) + y * motionMapped.RowPitch);
+        const auto* reconstructedRow = reinterpret_cast<const XMFLOAT2*>(static_cast<const std::byte*>(reconstructedMapped.pData) + y * reconstructedMapped.RowPitch);
+        for (std::uint32_t x = 0; x < g_width; ++x) {
+            if (!std::isfinite(depthRow[x]) || depthRow[x] >= 0.99999f) continue;
+            ++stats.active_pixels;
+            const float gtMagnitude = std::hypot(motionRow[x].x, motionRow[x].y);
+            const float reconstructedMagnitude = std::hypot(reconstructedRow[x].x, reconstructedRow[x].y);
+            const float error = std::hypot(reconstructedRow[x].x - motionRow[x].x,
+                                           reconstructedRow[x].y - motionRow[x].y);
+            if (!std::isfinite(gtMagnitude) || !std::isfinite(reconstructedMagnitude) || !std::isfinite(error)) {
+                g_context->Unmap(reconstructedReadback.Get(), 0);
+                g_context->Unmap(motionReadback.Get(), 0);
+                g_context->Unmap(depthReadback.Get(), 0);
+                throw std::runtime_error("non-finite value found during reconstruction comparison");
+            }
+
+            if (gtMagnitude > 0.05f) ++stats.ground_truth_moving_pixels;
+            if (reconstructedMagnitude > 0.05f) ++stats.reconstructed_moving_pixels;
+            if (error <= 0.5f) ++stats.close_pixels;
+            if (gtMagnitude > 0.25f && reconstructedMagnitude <= 0.05f) ++stats.camera_only_miss_pixels;
+            stats.max_error = (std::max)(stats.max_error, error);
+            stats.max_reconstructed_motion = (std::max)(stats.max_reconstructed_motion, reconstructedMagnitude);
+            errorSum += error;
+            reconstructedSum += reconstructedMagnitude;
+
+            if (diagnosticLabel) {
+                const std::size_t index = static_cast<std::size_t>(y) * g_width + x;
+                const float motionX = (std::clamp)(reconstructedRow[x].x / 128.0f, -1.0f, 1.0f);
+                const float motionY = (std::clamp)(reconstructedRow[x].y / 128.0f, -1.0f, 1.0f);
+                reconstructedPixels[index] = PackBgra(0.5f + 0.5f * motionX, 0.5f + 0.5f * motionY,
+                                                       (std::min)(reconstructedMagnitude / 128.0f, 1.0f));
+                const float errorVisual = (std::min)(error / 4.0f, 1.0f);
+                errorPixels[index] = PackBgra(errorVisual, 0.0f, 1.0f - errorVisual);
+            }
+        }
+    }
+
+    if (stats.active_pixels != 0) {
+        stats.mean_error = errorSum / static_cast<double>(stats.active_pixels);
+        stats.mean_reconstructed_motion = reconstructedSum / static_cast<double>(stats.active_pixels);
+    }
+    if (diagnosticLabel) {
+        const std::string prefix = std::string("ltr_diag_") + diagnosticLabel;
+        WriteBitmap32(prefix + "_reconstructed_motion.bmp", reconstructedPixels);
+        WriteBitmap32(prefix + "_reconstruction_error.bmp", errorPixels);
+    }
+
+    g_context->Unmap(reconstructedReadback.Get(), 0);
     g_context->Unmap(motionReadback.Get(), 0);
     g_context->Unmap(depthReadback.Get(), 0);
     return stats;
@@ -382,7 +593,13 @@ const wchar_t* ScenarioName() {
 }
 
 const wchar_t* ViewName() {
-    switch (g_debug_view) { case DebugView::scene: return L"scene"; case DebugView::depth: return L"depth"; case DebugView::motion: return L"motion"; default: return L"unknown"; }
+    switch (g_debug_view) {
+    case DebugView::scene: return L"scene";
+    case DebugView::depth: return L"depth";
+    case DebugView::motion: return L"motion";
+    case DebugView::reconstructed_motion: return L"reconstructed-motion";
+    default: return L"unknown";
+    }
 }
 
 void UpdateTitle() {
@@ -455,15 +672,41 @@ void Render(double seconds) {
     UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp); g_context->Draw(3, 0);
     UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp); g_context->Draw(3, 3);
 
+    g_context->OMSetRenderTargets(0, nullptr, nullptr);
+    const float reconstructedClear[4]{};
+    g_context->ClearRenderTargetView(g_reconstructed_motion_rtv.Get(), reconstructedClear);
+    ID3D11RenderTargetView* reconstructedTarget = g_reconstructed_motion_rtv.Get();
+    g_context->OMSetRenderTargets(1, &reconstructedTarget, nullptr);
+    g_context->IASetInputLayout(nullptr);
+    g_context->VSSetShader(g_debug_vs.Get(), nullptr, 0);
+    g_context->PSSetShader(g_reconstruct_ps.Get(), nullptr, 0);
+    ReconstructConstants reconstruct{};
+    const XMMATRIX inverseCurrentJittered = XMMatrixInverse(nullptr, jitteredVp);
+    XMStoreFloat4x4(&reconstruct.inverse_current_vp_jittered, inverseCurrentJittered);
+    XMStoreFloat4x4(&reconstruct.current_vp_unjittered, vp);
+    XMStoreFloat4x4(&reconstruct.previous_vp_unjittered, previousVp);
+    reconstruct.render_size = { static_cast<float>(g_width), static_cast<float>(g_height) };
+    D3D11_MAPPED_SUBRESOURCE reconstructMapped{};
+    CheckHr(g_context->Map(g_reconstruct_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &reconstructMapped), "Map(reconstruct)");
+    std::memcpy(reconstructMapped.pData, &reconstruct, sizeof(reconstruct));
+    g_context->Unmap(g_reconstruct_buffer.Get(), 0);
+    ID3D11Buffer* reconstructBuffer = g_reconstruct_buffer.Get();
+    g_context->PSSetConstantBuffers(0, 1, &reconstructBuffer);
+    ID3D11ShaderResourceView* reconstructResources[1]{g_depth_srv.Get()};
+    g_context->PSSetShaderResources(0, 1, reconstructResources);
+    g_context->Draw(3, 0);
+    ID3D11ShaderResourceView* nullReconstructResources[1]{};
+    g_context->PSSetShaderResources(0, 1, nullReconstructResources);
+
     g_context->OMSetRenderTargets(0, nullptr, nullptr); ID3D11RenderTargetView* backbuffer = g_backbuffer_rtv.Get(); g_context->OMSetRenderTargets(1, &backbuffer, nullptr);
     g_context->IASetInputLayout(nullptr); g_context->VSSetShader(g_debug_vs.Get(), nullptr, 0); g_context->PSSetShader(g_debug_ps.Get(), nullptr, 0);
-    DebugConstants debug{}; debug.mode = static_cast<std::uint32_t>(g_debug_view);
+    DebugConstants debug{}; debug.mode = static_cast<std::uint32_t>(g_debug_view); debug.motion_scale = 128.0f;
     D3D11_MAPPED_SUBRESOURCE mapped{}; CheckHr(g_context->Map(g_debug_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map(debug)");
     std::memcpy(mapped.pData, &debug, sizeof(debug)); g_context->Unmap(g_debug_buffer.Get(), 0);
     ID3D11Buffer* debugBuffer = g_debug_buffer.Get(); g_context->PSSetConstantBuffers(0, 1, &debugBuffer);
-    ID3D11ShaderResourceView* resources[3]{g_scene_color_srv.Get(), g_depth_srv.Get(), g_motion_srv.Get()}; g_context->PSSetShaderResources(0, 3, resources);
+    ID3D11ShaderResourceView* resources[4]{g_scene_color_srv.Get(), g_depth_srv.Get(), g_motion_srv.Get(), g_reconstructed_motion_srv.Get()}; g_context->PSSetShaderResources(0, 4, resources);
     ID3D11SamplerState* sampler = g_sampler.Get(); g_context->PSSetSamplers(0, 1, &sampler); g_context->Draw(3, 0);
-    ID3D11ShaderResourceView* nullSrvs[3]{}; g_context->PSSetShaderResources(0, 3, nullSrvs);
+    ID3D11ShaderResourceView* nullSrvs[4]{}; g_context->PSSetShaderResources(0, 4, nullSrvs);
     CheckHr(g_swap_chain->Present(g_self_test ? 0u : 1u, 0), "Present");
 
     g_previous_world = world; g_previous_vp = vp; g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
@@ -485,6 +728,46 @@ void AppendStats(std::ostringstream& report, const char* label, const char* phas
            << " cpu_probe_motion=" << g_cpu_probe_motion << '\n';
 }
 
+void AppendReconstructionStats(std::ostringstream& report, const char* label, const char* phase,
+                               const ReconstructionStats& stats, bool ok) {
+    report << (ok ? "PASS " : "FAIL ") << label << ' ' << phase << " camera-depth"
+           << " active=" << stats.active_pixels
+           << " gt_moving=" << stats.ground_truth_moving_pixels
+           << " reconstructed_moving=" << stats.reconstructed_moving_pixels
+           << " close_0.5px=" << stats.close_pixels
+           << " camera_only_miss=" << stats.camera_only_miss_pixels
+           << " mean_reconstructed_motion=" << stats.mean_reconstructed_motion
+           << " max_reconstructed_motion=" << stats.max_reconstructed_motion
+           << " mean_error=" << stats.mean_error
+           << " max_error=" << stats.max_error << '\n';
+}
+
+bool ValidateReconstruction(const ReconstructionStats& stats, bool expectCameraMotion,
+                            bool expectCameraOnlyLimitation) {
+    const std::uint64_t minimumActive = static_cast<std::uint64_t>(g_width) * g_height / 100u;
+    if (stats.active_pixels < minimumActive) return false;
+
+    if (expectCameraOnlyLimitation) {
+        return stats.ground_truth_moving_pixels > stats.active_pixels / 100u &&
+               stats.reconstructed_moving_pixels == 0 &&
+               stats.max_reconstructed_motion <= 0.01f &&
+               stats.camera_only_miss_pixels >= (stats.ground_truth_moving_pixels * 99u) / 100u &&
+               stats.close_pixels < stats.active_pixels;
+    }
+
+    if (expectCameraMotion) {
+        return stats.ground_truth_moving_pixels > (stats.active_pixels * 9u) / 10u &&
+               stats.reconstructed_moving_pixels > (stats.active_pixels * 9u) / 10u &&
+               stats.close_pixels >= (stats.active_pixels * 99u) / 100u &&
+               stats.camera_only_miss_pixels == 0 &&
+               stats.mean_error <= 0.05 && stats.max_error <= 0.1f;
+    }
+
+    return stats.ground_truth_moving_pixels == 0 && stats.reconstructed_moving_pixels == 0 &&
+           stats.camera_only_miss_pixels == 0 && stats.close_pixels == stats.active_pixels &&
+           stats.max_reconstructed_motion <= 0.01f && stats.mean_error <= 0.01 && stats.max_error <= 0.01f;
+}
+
 bool ValidateStats(const ReadbackStats& stats, bool expectMotion, bool requireStaticCoverage) {
     const std::uint64_t minimumActive = static_cast<std::uint64_t>(g_width) * g_height / 100u;
     if (stats.active_pixels < minimumActive) return false;
@@ -498,28 +781,38 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
                       bool expectMotion, bool requireStaticCoverage, std::ostringstream& report) {
     g_scenario = scenario;
     g_pending_reset = ltr::harness::HistoryResetReason::scenario_change;
+    const bool expectCameraMotion = scenario == Scenario::camera_translate || scenario == Scenario::camera_rotate;
+    const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object;
     const std::uint32_t expectedGeneration = g_history_generation + 1u;
+
     Render(0.0);
     const ReadbackStats resetStats = ReadbackGroundTruth();
+    const ReconstructionStats resetReconstructionStats = ReadbackReconstructionComparison();
+    const bool resetReconstructionOk = ValidateReconstruction(resetReconstructionStats, false, false);
     const bool resetOk = g_last_frame.identity.history_generation == expectedGeneration &&
                          g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::scenario_change &&
-                         ValidateStats(resetStats, false, false);
+                         ValidateStats(resetStats, false, false) && resetReconstructionOk;
     AppendStats(report, name, "reset", resetStats, resetOk);
+    AppendReconstructionStats(report, name, "reset", resetReconstructionStats, resetReconstructionOk);
 
     const std::uint64_t expectedFrame = g_last_frame.identity.frame_index + 1u;
     Render(secondTime);
-    const ReadbackStats steadyStats = ReadbackGroundTruth();
+    const ReadbackStats steadyStats = ReadbackGroundTruth(name);
+    const ReconstructionStats steadyReconstructionStats = ReadbackReconstructionComparison(name);
+    const bool steadyReconstructionOk =
+        ValidateReconstruction(steadyReconstructionStats, expectCameraMotion, expectCameraOnlyLimitation);
     const bool steadyOk = g_last_frame.identity.frame_index == expectedFrame &&
                           g_last_frame.identity.history_generation == expectedGeneration &&
                           g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::none &&
-                          ValidateStats(steadyStats, expectMotion, requireStaticCoverage);
+                          ValidateStats(steadyStats, expectMotion, requireStaticCoverage) && steadyReconstructionOk;
     AppendStats(report, name, "steady", steadyStats, steadyOk);
+    AppendReconstructionStats(report, name, "steady", steadyReconstructionStats, steadyReconstructionOk);
     return resetOk && steadyOk;
 }
 
 bool RunDeterministicSelfTest() {
     std::ostringstream report;
-    report << "LTR Bridge deterministic D3D11 ground-truth readback\n";
+    report << "LTR Bridge deterministic D3D11 temporal readback\n";
     report << "extent=" << g_width << 'x' << g_height
            << " motion=R32G32_FLOAT direction=current-to-previous units=render-pixels jitter-included=false\n";
 

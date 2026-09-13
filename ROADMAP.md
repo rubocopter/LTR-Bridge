@@ -26,7 +26,7 @@ Status: **implemented (documentation), not experimentally validated**.
 
 ## Phase 1 — D3D11 x64 temporal harness
 
-Status: **implemented, host-tested; visual/performance validation pending**.
+Status: **implemented, host-tested and visual-validated for static/camera/rigid-object ground truth plus the controlled camera+depth baseline; performance and expanded-content validation pending**.
 
 Goal: prove temporal correctness without legacy transport complexity.
 
@@ -43,7 +43,7 @@ Success criteria:
 
 Decision gate: only proceed to legacy integration after the contract can be validated independently of a game.
 
-Current foundation: the standalone x64 D3D11 harness now provides 1:1 scene color, shader-readable hardware depth, renderer projection jitter, current-pixel -> previous-pixel ground-truth camera/rigid-object motion, explicit history resets, provisional per-view identity, and scene/depth/MV diagnostics. Alternative MV providers, the remaining content cases, reconstruction backends, deterministic readback, visual validation, and performance measurements remain pending.
+Current foundation: the standalone x64 D3D11 harness now provides 1:1 scene color, shader-readable hardware depth, renderer projection jitter, current-pixel -> previous-pixel ground-truth camera/rigid-object motion, explicit history resets, provisional per-view identity, and scene/depth/MV diagnostics. Deterministic GPU readback is wired into CTest and Windows CI, and the current static/camera/rigid-object diagnostic outputs have been visually inspected. A camera+depth MV baseline is now compared deterministically against renderer ground truth: it matches controlled camera translation/rotation within sub-0.01 px maximum error and explicitly fails object-motion coverage in the rigid-object case, as expected for a camera-only provider. Additional MV providers such as optical flow, the remaining content cases, reconstruction backends, broader visual validation, and performance measurements remain pending.
 
 ## Phase 2 — D3D11 x86 -> x64 bridge probe
 
