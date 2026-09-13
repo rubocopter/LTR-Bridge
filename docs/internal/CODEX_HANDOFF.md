@@ -4,7 +4,7 @@ Updated: 2026-09-13.
 
 ## Repository state
 
-This workspace started empty. The project remains in research/design mode; there is no production injector or reconstruction runtime.
+This workspace started empty. The project now includes the first controlled D3D11 x64 Phase 1 research harness; there is still no production injector or reconstruction runtime.
 
 Core files now present:
 
@@ -23,6 +23,7 @@ Core files now present:
 - `docs/MOTION_VECTORS.md`
 - `docs/DEPTH.md`
 - `docs/JITTER.md`
+- `docs/HARNESS.md`
 - `docs/CASE_STUDY_BIOSHOCK_VR.md`
 - `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`
 - `docs/REFERENCES.md`
@@ -85,14 +86,22 @@ Pinned public reference: `BradyBrenot/RogueTrader_DLSS` release `v2.2` / commit 
 
 Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement. The BioShock and Rogue Trader case studies independently strengthen the separation between shared semantic/transport/backend mechanisms and game-specific temporal providers while showing different fidelity points on the same temporal-quality ladder.
 
+## Phase 1 harness state
+
+1. **Implemented:** `ltr_temporal_harness` is a standalone x64 D3D11 research executable with 1:1 render/output extents, real renderer projection jitter, shader-readable hardware depth, and current-pixel -> previous-pixel ground-truth motion in render-pixel units.
+2. **Implemented:** motion excludes projection jitter and records that convention separately. Coverage currently includes camera and rigid-object motion; skinned/cloth geometry, particles, transparency, and HUD are explicit known exclusions.
+3. **Implemented:** frame identity includes a monotonic frame index, provisional view index, history generation, and explicit startup/resize/scenario/manual reset reason. This remains internal research metadata, not a public ABI.
+4. **Host-tested:** Release x64 built with MSVC 19.44 / Windows SDK 10.0.26100.0. A hidden smoke run stayed alive and responsive for three seconds after D3D11 initialization.
+5. **Experiment-pending:** deterministic GPU readback, visual validation, remaining content cases, camera+depth reconstruction, optical flow, native-AA backend mapping, frame-time/VRAM measurement, SR, and stereo.
+
 ## Next concrete work
 
 1. Re-inspect repository state and this handoff.
-2. Before implementing the D3D11 harness, mine the two real-game case studies only for reusable validation ideas: BioShock for exact identity/reject/reset/stereo isolation and camera+depth motion; Rogue Trader for renderer-native MV coverage, real jitter, render/output extent control and insertion-point/resolution-assumption tests. Do not import game-specific hooks or freeze either implementation's ABI.
+2. Continue Phase 1 from the implemented harness: add deterministic readback and validation for static, camera-motion, and rigid-object ground truth before expanding content coverage.
 3. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
 4. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
-5. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes. Compare native camera+object motion, camera+depth reconstruction and optical flow; carry motion coverage/exclusions separately from provenance.
-6. Add diagnostic visualizations for the exact depth resource/convention, motion direction/scale/confidence/validity and history reset. Include an optical-flow baseline beside ground-truth/renderer-derived motion so quality loss is measurable rather than anecdotal.
+5. Add camera+depth reconstruction and compare it against the renderer-ground-truth vectors; preserve coverage/exclusions and add explicit confidence/validity diagnostics.
+6. Add an optical-flow baseline beside ground truth and camera+depth motion so quality loss is measurable rather than anecdotal, then introduce the first native-resolution AA backend only after those diagnostics are trustworthy.
 7. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe. From the first stereo-capable version, include two independent streams, distinct histories/resources, deterministic readback and cross-eye contamination detection.
 8. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
 9. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.

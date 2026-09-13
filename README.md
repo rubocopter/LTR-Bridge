@@ -18,7 +18,9 @@ The largest unresolved problem is not calling an upscaler. It is producing trust
 
 ## Initial prototype direction
 
-The current roadmap favors a controlled D3D11 x64 harness first, with DLAA/native-resolution temporal AA as the initial backend experiment. This avoids internal-resolution changes while validating color, depth, motion vectors, jitter, history, and reset behavior. A D3D11 x86 transport probe follows before D3D10 and D3D9 experiments.
+The first controlled D3D11 x64 harness foundation is now implemented and host-tested. It renders a known 1:1 scene with projection jitter, shader-readable depth, renderer-ground-truth camera/rigid-object motion vectors, explicit history resets, provisional view identity, and scene/depth/MV diagnostics. No reconstruction SDK is integrated yet; this stage exists to validate temporal semantics before backend behavior can hide input errors.
+
+The next Phase 1 work is deterministic readback plus visual validation of the ground truth, followed by camera+depth reconstruction and optical-flow comparison before a native-AA reconstruction backend is introduced. A D3D11 x86 transport probe follows only after the controlled contract is independently trustworthy.
 
 This order is a research hypothesis, not a permanent product architecture.
 
@@ -35,6 +37,7 @@ This order is a research hypothesis, not a permanent product architecture.
 - [docs/MOTION_VECTORS.md](docs/MOTION_VECTORS.md) — motion-vector strategies and gaps.
 - [docs/DEPTH.md](docs/DEPTH.md) — depth discovery, preservation and semantic requirements.
 - [docs/JITTER.md](docs/JITTER.md) — projection-jitter requirements and legacy injection constraints.
+- [docs/HARNESS.md](docs/HARNESS.md) — controlled D3D11 x64 Phase 1 harness and evidence boundary.
 - [docs/CASE_STUDY_BIOSHOCK_VR.md](docs/CASE_STUDY_BIOSHOCK_VR.md) — x86/x64 stereo transport and game-specific temporal-provider case study.
 - [docs/CASE_STUDY_ROGUE_TRADER_DLSS.md](docs/CASE_STUDY_ROGUE_TRADER_DLSS.md) — renderer-native resolution/jitter/MV integration case study.
 - [docs/REFERENCES.md](docs/REFERENCES.md) — research snapshot and source versions.
@@ -43,7 +46,7 @@ This order is a research hypothesis, not a permanent product architecture.
 
 Repository claims use explicit maturity states: `planned`, `implemented`, `host-tested`, `live-tested`, `visual-validated`, `performance-validated`, `vr-headset-validated`, and `supported`.
 
-As of 2026-09-13 this repository contains research and design documents only. No production injector or reconstruction runtime is implemented.
+As of 2026-09-13 the repository contains the first controlled D3D11 x64 research harness. No production injector or reconstruction runtime is implemented.
 
 ## License
 

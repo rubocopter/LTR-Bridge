@@ -26,7 +26,7 @@ Status: **implemented (documentation), not experimentally validated**.
 
 ## Phase 1 — D3D11 x64 temporal harness
 
-Status: **planned**.
+Status: **implemented, host-tested; visual/performance validation pending**.
 
 Goal: prove temporal correctness without legacy transport complexity.
 
@@ -42,6 +42,8 @@ Success criteria:
 - frame-time and VRAM measurements.
 
 Decision gate: only proceed to legacy integration after the contract can be validated independently of a game.
+
+Current foundation: the standalone x64 D3D11 harness now provides 1:1 scene color, shader-readable hardware depth, renderer projection jitter, current-pixel -> previous-pixel ground-truth camera/rigid-object motion, explicit history resets, provisional per-view identity, and scene/depth/MV diagnostics. Alternative MV providers, the remaining content cases, reconstruction backends, deterministic readback, visual validation, and performance measurements remain pending.
 
 ## Phase 2 — D3D11 x86 -> x64 bridge probe
 
