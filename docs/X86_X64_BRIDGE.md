@@ -87,13 +87,17 @@ Microsoft documents D3D10.1/DXGI keyed-mutex synchronization, while Feeder repor
 
 ## D3D9 boundary
 
-D3D9 supports shared resources on modern Windows under specific restrictions, but Microsoft notes that a shared resource must be opened through a matching API. This means a native D3D9 shared handle is not a drop-in D3D12 transport object.
+Native D3D9 resources are not a drop-in D3D12 transport object, but Microsoft documents a narrower direct D3D9 -> D3D11 texture-sharing path through `ID3D11Device::OpenSharedResource`. The D3D9 texture is created with `pSharedHandle`, then opened by a D3D11 device.
+
+That path is heavily constrained: 2D, one mip, default usage, no MSAA, and only a small format set (`R10G10B10A2_UNORM`, `R16G16B16A16_FLOAT`, `R8G8B8A8_UNORM`). It therefore looks more like a purpose-built relay surface than a way to expose arbitrary native game resources.
+
+Microsoft's broader interoperability documentation also says unsynchronized sharing is supported by D3D9Ex while D3D9c and older runtimes do not support shared surfaces. The apparent mismatch with the `OpenSharedResource` page is an explicit experiment target; LTR Bridge must not generalize the route to classic D3D9 before testing it.
 
 Candidate routes:
 
-1. D3D9 -> private relay API/device -> modern sharing;
-2. D3D9 -> dgVoodoo2 -> D3D11 -> modern sharing;
-3. another explicit copy/interop mechanism proven by a focused spike.
+1. classic D3D9/D3D9Ex adapter -> dedicated relay textures -> private D3D11 device -> modern sharing, if the runtime/driver permits it;
+2. direct D3D9 adapter -> another explicit transport proven by a focused spike;
+3. D3D9 -> dgVoodoo2 -> D3D11 -> modern sharing.
 
 No route is selected yet.
 
