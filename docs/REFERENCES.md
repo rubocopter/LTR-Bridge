@@ -34,6 +34,13 @@ Research date: 2026-09-13. External projects change quickly; re-check versions b
 - Generic depth example: https://github.com/crosire/reshade/blob/main/examples/09-depth/generic_depth_addon.cpp
 - API device definitions: https://github.com/crosire/reshade/blob/main/include/reshade_api_device.hpp
 - Primary project license: BSD-3-Clause. Public API headers such as `reshade.hpp` and `reshade_api.hpp` declare BSD-3-Clause OR MIT. Verify the exact file/component before reuse or redistribution.
+- Generic depth add-on: https://github.com/crosire/reshade/blob/main/examples/09-depth/generic_depth_addon.cpp — current reference for D3D9 `INTZ`, D3D10/11 typeless depth access, backup-before-clear logic and MSAA depth-resolve capability checks.
+
+## LumeniteFX / image-space motion estimation
+
+- Repository: https://github.com/umar-afzaal/LumeniteFX
+- Current project description documents a Kernel pre-effect that computes reconstructed normals, motion vectors and motion confidence, plus LumaFlow dense real-time motion estimation.
+- DLSS5-Feeder currently recommends Lumenite Kernel and documents consuming its 1/8-resolution flow plus confidence output. Treat this as evidence for a useful fallback/baseline, not renderer-native motion semantics.
 
 ## NVIDIA Streamline / DLSS
 
@@ -92,6 +99,13 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 - Project site: http://dege.freeweb.hu/dgVoodoo2/dgVoodoo2/
 - Current ecosystem version observed in DLSS5-Swapper: 2.87.4.
 - Primary redistribution terms reviewed: individual dgVoodoo files may be shipped as part of a specific game or game mod; standalone redistribution is expected to preserve the complete original package, and the author does not permit bundling dgVoodoo into a general-purpose launcher/framework intended to apply it across arbitrary applications. This materially affects any future LTR Bridge packaging strategy and should be re-checked against the then-current dgVoodoo readme before release.
+
+## D3D8 translation
+
+- `crosire/d3d8to9`: https://github.com/crosire/d3d8to9
+- ReShade setup source currently detects D3D8 executables and directs users to `d3d8to9` before using the D3D9 path.
+- `d3d8to9` performs D3D8 -> D3D9 API/shader translation and is BSD-2-Clause. Its own documentation warns that rendering behavior may differ from native D3D8 on modern systems.
+- `d3d8to9ex`: https://github.com/RibShark/d3d8to9ex — a small third-party D3D9Ex-targeting fork; research lead only, not a selected dependency.
 
 ## Research discipline
 
