@@ -39,6 +39,7 @@ TemporalFrameInput
     jittered?
     dilated?
     provenance
+    confidence_or_validity?
 
   camera:
     view/projection
@@ -104,6 +105,8 @@ Minimum metadata should state:
 - whether vectors are dilated;
 - provider provenance and confidence/validation state.
 
+For reconstructed/optical-flow providers, confidence should be representable as an explicit per-pixel resource or typed mask rather than only a global provider label. Current legacy experiments already benefit from rejecting vectors using luma/depth/consistency tests; the contract should not force those diagnostics to be discarded before backend mapping.
+
 ## Depth semantics
 
 Minimum metadata should state:
@@ -122,6 +125,8 @@ The contract should store jitter separately from projection matrices. NVIDIA Str
 For a legacy game with no native TAA, the adapter/provider must determine where projection jitter can be introduced without breaking HUD, first-person weapon rendering, shadows, post-process passes, cinematics, or VR projection.
 
 `jitter = 0` is not a generic substitute for a real temporal-SR integration.
+
+Likewise, shifting a post-process/downsample sampling grid after the game has rendered is not equivalent to jittering the renderer projection. It may be a useful reconstruction experiment but must carry different provenance so it cannot be mistaken for real renderer-generated subpixel samples.
 
 ## History identity
 
