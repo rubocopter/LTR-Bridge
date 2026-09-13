@@ -43,6 +43,10 @@ Core files now present:
 7. OpenXR 1.1 confirms per-view poses tied to a target `predictedDisplayTime`; VR validation should preserve/log that timing and view identity through the temporal pipeline.
 8. AMD FidelityFX, Intel XeSS and ReShade primary licensing was reviewed at the architecture-research level. AMD permits covered binary redistribution subject to notices and no reverse engineering; Intel XeSS permits redistribution of unmodified binary software with notices and no reverse engineering; ReShade is BSD-3-Clause with key public API headers dual BSD-3-Clause/MIT. Exact selected files/binaries still require a release-time check.
 9. The current AMD `signedbin` tree contains one DX12 DLL set without architecture-specific filenames. That is insufficient evidence of x86 or x64 machine type, so FSR CPU-architecture support remains explicitly unverified until the PE headers are inspected.
+10. ReShade's current generic depth add-on proves API-specific depth strategies: D3D9 `INTZ` substitution where possible, D3D10/11 typeless/SRV access, backup-before-clear and explicit MSAA resolve handling. Depth selection itself remains heuristic and must carry provenance/override support.
+11. LumeniteFX/Feeder provide a strong optical-flow baseline with confidence and validation masks, but current upstream reports fast-motion/thin-geometry/transparency/HUD artifacts. Renderer-derived motion remains the target; optical flow is fallback/baseline evidence.
+12. ReShade's current D3D8 setup path points users to BSD-2-Clause `d3d8to9`. D3D8 should eventually compare native interception, d3d8to9->D3D9 and dgVoodoo2->D3D11/12 on the same target.
+13. Feeder's synthetic post-process jitter experiment is useful negative evidence: shifting a downsample grid after rendering is not projection jitter and cannot provide real SR semantics or game-side performance gain.
 
 ## Candidate architecture
 
@@ -56,9 +60,10 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 2. When direct binary inspection is available, inspect the PE machine type of the current AMD FSR signed loader/upscaler DLLs. Do not infer x86/x64 support from filenames. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
 3. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
 4. Build a controlled D3D11 x64 temporal harness. Prefer native-resolution temporal AA first so color/depth/MV/jitter/history can be validated without internal-resolution changes.
-5. Add diagnostic visualizations for depth, motion direction/scale and history reset.
+5. Add diagnostic visualizations for the exact depth resource/convention, motion direction/scale/confidence/validity and history reset. Include an optical-flow baseline beside ground-truth/renderer-derived motion so quality loss is measurable rather than anecdotal.
 6. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe.
 7. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
+8. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.
 
 ## Important upstream snapshot
 
