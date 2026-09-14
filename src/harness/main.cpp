@@ -30,6 +30,9 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"LTRBridgeTemporalHarness";
 constexpr wchar_t kWindowTitle[] = L"LTR Bridge - D3D11 x64 Temporal Harness";
+constexpr float kHudCenterY = 0.80f;
+constexpr float kHudHalfWidth = 0.08f;
+constexpr float kHudHalfHeight = 0.045f;
 
 enum class Scenario : std::uint32_t {
     static_scene = 0,
@@ -39,6 +42,7 @@ enum class Scenario : std::uint32_t {
     deforming_geometry,
     masked_particle,
     blended_transparency,
+    hud_overlay,
     disocclusion,
     count
 };
@@ -75,9 +79,16 @@ struct ReconstructConstants {
     XMFLOAT2 padding{};
 };
 
+struct HudConstants {
+    XMFLOAT2 center{};
+    XMFLOAT2 half_size{};
+    XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 static_assert(sizeof(PerDrawConstants) % 16 == 0);
 static_assert(sizeof(DebugConstants) % 16 == 0);
 static_assert(sizeof(ReconstructConstants) % 16 == 0);
+static_assert(sizeof(HudConstants) % 16 == 0);
 
 HWND g_window = nullptr;
 std::uint32_t g_width = 1280;
@@ -98,6 +109,9 @@ float g_previous_jitter_y = 0.0f;
 float g_previous_deformation_phase = 0.0f;
 float g_last_previous_jitter_x = 0.0f;
 float g_last_previous_jitter_y = 0.0f;
+float g_current_hud_center_x = 0.5f;
+float g_previous_hud_center_x = 0.5f;
+float g_last_previous_hud_center_x = 0.5f;
 std::vector<std::uint32_t> g_previous_surface_ids;
 ltr::harness::TemporalFrameDescription g_last_frame{};
 float g_cpu_probe_motion = 0.0f;
@@ -125,11 +139,13 @@ ComPtr<ID3D11PixelShader> g_scene_ps;
 ComPtr<ID3D11VertexShader> g_debug_vs;
 ComPtr<ID3D11PixelShader> g_debug_ps;
 ComPtr<ID3D11PixelShader> g_reconstruct_ps;
+ComPtr<ID3D11PixelShader> g_hud_ps;
 ComPtr<ID3D11InputLayout> g_input_layout;
 ComPtr<ID3D11Buffer> g_vertex_buffer;
 ComPtr<ID3D11Buffer> g_per_draw_buffer;
 ComPtr<ID3D11Buffer> g_debug_buffer;
 ComPtr<ID3D11Buffer> g_reconstruct_buffer;
+ComPtr<ID3D11Buffer> g_hud_buffer;
 ComPtr<ID3D11SamplerState> g_sampler;
 ComPtr<ID3D11BlendState> g_transparent_blend_state;
 ComPtr<ID3D11DepthStencilState> g_transparent_depth_state;
@@ -152,6 +168,10 @@ struct HistoryValidityStats {
     std::uint64_t mixed_layer_pixels = 0;
     std::uint64_t mixed_layer_valid_pixels = 0;
     std::uint64_t mixed_layer_invalid_pixels = 0;
+    std::uint64_t hud_overlay_pixels = 0;
+    std::uint64_t hud_overlay_valid_pixels = 0;
+    std::uint64_t hud_changed_history_pixels = 0;
+    std::uint64_t hud_changed_history_valid_pixels = 0;
 };
 
 struct ReconstructionStats {
@@ -173,6 +193,12 @@ std::uint8_t ToByte(float value) {
 std::uint32_t PackBgra(float red, float green, float blue) {
     return 0xFF000000u | (static_cast<std::uint32_t>(ToByte(red)) << 16u) |
            (static_cast<std::uint32_t>(ToByte(green)) << 8u) | static_cast<std::uint32_t>(ToByte(blue));
+}
+
+bool IsHudSample(float pixelX, float pixelY, float centerX) {
+    const float u = pixelX / static_cast<float>(g_width);
+    const float v = pixelY / static_cast<float>(g_height);
+    return std::abs(u - centerX) <= kHudHalfWidth && std::abs(v - kHudCenterY) <= kHudHalfHeight;
 }
 
 void WriteBitmap32(const std::string& path, const std::vector<std::uint32_t>& pixels) {
@@ -334,6 +360,20 @@ float4 DebugPS(VSOut input) : SV_Target0 {
 }
 )hlsl";
 
+constexpr std::string_view kHudShader = R"hlsl(
+cbuffer HudConstants : register(b0) {
+    float2 center;
+    float2 halfSize;
+    float4 color;
+};
+struct PSIn { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+float4 HudPS(PSIn input) : SV_Target0 {
+    float2 outside = abs(input.uv - center) - halfSize;
+    clip(-max(outside.x, outside.y));
+    return color;
+}
+)hlsl";
+
 constexpr std::string_view kReconstructShader = R"hlsl(
 Texture2D<float> depthTexture : register(t0);
 cbuffer ReconstructConstants : register(b0) {
@@ -438,11 +478,13 @@ void CreateDeviceAndPipeline() {
     const auto scenePs = Compile(kSceneShader, "ScenePS", "ps_4_0");
     const auto debugVs = Compile(kDebugShader, "DebugVS", "vs_4_0");
     const auto debugPs = Compile(kDebugShader, "DebugPS", "ps_4_0");
+    const auto hudPs = Compile(kHudShader, "HudPS", "ps_4_0");
     const auto reconstructPs = Compile(kReconstructShader, "ReconstructPS", "ps_4_0");
     CheckHr(g_device->CreateVertexShader(sceneVs->GetBufferPointer(), sceneVs->GetBufferSize(), nullptr, &g_scene_vs), "CreateVertexShader");
     CheckHr(g_device->CreatePixelShader(scenePs->GetBufferPointer(), scenePs->GetBufferSize(), nullptr, &g_scene_ps), "CreatePixelShader");
     CheckHr(g_device->CreateVertexShader(debugVs->GetBufferPointer(), debugVs->GetBufferSize(), nullptr, &g_debug_vs), "CreateDebugVS");
     CheckHr(g_device->CreatePixelShader(debugPs->GetBufferPointer(), debugPs->GetBufferSize(), nullptr, &g_debug_ps), "CreateDebugPS");
+    CheckHr(g_device->CreatePixelShader(hudPs->GetBufferPointer(), hudPs->GetBufferSize(), nullptr, &g_hud_ps), "CreateHudPS");
     CheckHr(g_device->CreatePixelShader(reconstructPs->GetBufferPointer(), reconstructPs->GetBufferSize(), nullptr, &g_reconstruct_ps), "CreateReconstructPS");
 
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
@@ -465,6 +507,8 @@ void CreateDeviceAndPipeline() {
     CheckHr(g_device->CreateBuffer(&cb, nullptr, &g_debug_buffer), "CreateBuffer(debug)");
     cb.ByteWidth = sizeof(ReconstructConstants);
     CheckHr(g_device->CreateBuffer(&cb, nullptr, &g_reconstruct_buffer), "CreateBuffer(reconstruct)");
+    cb.ByteWidth = sizeof(HudConstants);
+    CheckHr(g_device->CreateBuffer(&cb, nullptr, &g_hud_buffer), "CreateBuffer(hud)");
 
     D3D11_SAMPLER_DESC sampler{}; sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sampler.MaxLOD = D3D11_FLOAT32_MAX;
@@ -653,9 +697,15 @@ HistoryValidityStats ReadbackHistoryValidity(bool historyAvailable, const char* 
             ++stats.active_pixels;
             const bool mixedLayer = currentSurface == 3u;
             if (mixedLayer) ++stats.mixed_layer_pixels;
+            const bool hudOverlay = g_scenario == Scenario::hud_overlay &&
+                                    IsHudSample(static_cast<float>(x) + 0.5f,
+                                                static_cast<float>(y) + 0.5f,
+                                                g_current_hud_center_x);
+            if (hudOverlay) ++stats.hud_overlay_pixels;
 
             bool valid = false;
             bool outOfBounds = false;
+            bool hudHistoryChanged = false;
             std::uint32_t previousSurface = 0u;
             if (previousSurfaceAvailable) {
                 const float previousX = static_cast<float>(x) + 0.5f + motionRow[x].x + jitterDeltaX;
@@ -669,12 +719,19 @@ HistoryValidityStats ReadbackHistoryValidity(bool historyAvailable, const char* 
                                                       static_cast<std::size_t>(previousPixelX);
                     previousSurface = g_previous_surface_ids[previousIndex];
                     valid = currentSurface != 0u && previousSurface == currentSurface;
+                    if (hudOverlay) {
+                        const bool previousHud = IsHudSample(previousX, previousY, g_last_previous_hud_center_x);
+                        hudHistoryChanged = !previousHud;
+                    }
                 }
             }
+            if (hudHistoryChanged) ++stats.hud_changed_history_pixels;
 
             if (valid) {
                 ++stats.valid_pixels;
                 if (mixedLayer) ++stats.mixed_layer_valid_pixels;
+                if (hudOverlay) ++stats.hud_overlay_valid_pixels;
+                if (hudHistoryChanged) ++stats.hud_changed_history_valid_pixels;
                 if (diagnosticLabel) diagnosticPixels[index] = PackBgra(0.0f, 1.0f, 0.0f);
             } else {
                 ++stats.invalid_pixels;
@@ -802,6 +859,7 @@ const wchar_t* ScenarioName() {
     case Scenario::deforming_geometry: return L"deforming-geometry";
     case Scenario::masked_particle: return L"masked-particle";
     case Scenario::blended_transparency: return L"blended-transparency";
+    case Scenario::hud_overlay: return L"hud-overlay";
     case Scenario::disocclusion: return L"disocclusion"; default: return L"unknown";
     }
 }
@@ -818,7 +876,7 @@ const wchar_t* ViewName() {
 
 void UpdateTitle() {
     wchar_t title[384]{};
-    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-8 scenario, Tab debug, R reset",
+    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-9 scenario, Tab debug, R reset",
                ScenarioName(), ViewName(), static_cast<unsigned long long>(g_last_frame.identity.frame_index),
                g_last_frame.identity.history_generation, g_last_frame.jitter_x_pixels, g_last_frame.jitter_y_pixels);
     SetWindowTextW(g_window, title);
@@ -838,6 +896,7 @@ void Render(double seconds) {
     XMVECTOR target = XMVectorZero();
     XMMATRIX world = XMMatrixIdentity();
     float deformationPhase = 0.0f;
+    float hudCenterX = 0.5f;
     if (g_scenario == Scenario::camera_translate) {
         const float x = std::sin(t * 0.75f) * 1.25f; eye = XMVectorSet(x, 1.4f, -5.0f, 1.0f); target = XMVectorSet(x * 0.2f, 0.0f, 0.0f, 1.0f);
     } else if (g_scenario == Scenario::camera_rotate) {
@@ -850,6 +909,8 @@ void Render(double seconds) {
         world = XMMatrixTranslation(-0.9f + 1.8f * t, std::sin(t * 1.7f) * 0.18f, 0.0f);
     } else if (g_scenario == Scenario::blended_transparency) {
         world = XMMatrixTranslation(-0.75f + 1.5f * t, std::sin(t * 1.25f) * 0.12f, 0.0f);
+    } else if (g_scenario == Scenario::hud_overlay) {
+        hudCenterX = 0.5f + 0.28f * std::sin(t * 1.5707963f);
     } else if (g_scenario == Scenario::disocclusion) {
         world = XMMatrixTranslation(-1.6f + 3.2f * t, 0.0f, 0.0f);
     }
@@ -873,14 +934,18 @@ void Render(double seconds) {
 
     XMMATRIX previousWorld = g_previous_world, previousVp = g_previous_vp;
     float previousDeformationPhase = g_previous_deformation_phase;
+    float previousHudCenterX = g_previous_hud_center_x;
     g_last_previous_jitter_x = g_previous_jitter_x;
     g_last_previous_jitter_y = g_previous_jitter_y;
     if (!g_previous_valid || g_pending_reset != ltr::harness::HistoryResetReason::none) {
         previousWorld = world; previousVp = vp;
         previousDeformationPhase = deformationPhase;
+        previousHudCenterX = hudCenterX;
         g_last_previous_jitter_x = jitterX;
         g_last_previous_jitter_y = jitterY;
     }
+    g_current_hud_center_x = hudCenterX;
+    g_last_previous_hud_center_x = previousHudCenterX;
 
     const XMVECTOR probeLocal = XMVectorSet(0.7f, 0.5f, 0.0f, 1.0f);
     const XMVECTOR currentProbeClip = XMVector4Transform(XMVector4Transform(probeLocal, world), vp);
@@ -923,6 +988,24 @@ void Render(double seconds) {
         g_context->Draw(3, 3);
     }
 
+    if (g_scenario == Scenario::hud_overlay) {
+        ID3D11RenderTargetView* hudTarget = g_scene_color_rtv.Get();
+        g_context->OMSetRenderTargets(1, &hudTarget, nullptr);
+        g_context->IASetInputLayout(nullptr);
+        g_context->VSSetShader(g_debug_vs.Get(), nullptr, 0);
+        g_context->PSSetShader(g_hud_ps.Get(), nullptr, 0);
+        HudConstants hud{};
+        hud.center = { hudCenterX, kHudCenterY };
+        hud.half_size = { kHudHalfWidth, kHudHalfHeight };
+        D3D11_MAPPED_SUBRESOURCE hudMapped{};
+        CheckHr(g_context->Map(g_hud_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &hudMapped), "Map(hud)");
+        std::memcpy(hudMapped.pData, &hud, sizeof(hud));
+        g_context->Unmap(g_hud_buffer.Get(), 0);
+        ID3D11Buffer* hudBuffer = g_hud_buffer.Get();
+        g_context->PSSetConstantBuffers(0, 1, &hudBuffer);
+        g_context->Draw(3, 0);
+    }
+
     g_context->OMSetRenderTargets(0, nullptr, nullptr);
     const float reconstructedClear[4]{};
     g_context->ClearRenderTargetView(g_reconstructed_motion_rtv.Get(), reconstructedClear);
@@ -963,6 +1046,7 @@ void Render(double seconds) {
     g_previous_world = world; g_previous_vp = vp;
     g_previous_jitter_x = jitterX; g_previous_jitter_y = jitterY;
     g_previous_deformation_phase = deformationPhase;
+    g_previous_hud_center_x = hudCenterX;
     g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
     ++g_frame_index; UpdateTitle();
 }
@@ -1007,7 +1091,11 @@ void AppendHistoryValidityStats(std::ostringstream& report, const char* label, c
            << " disoccluded_background=" << stats.disoccluded_background_pixels
            << " mixed_layer=" << stats.mixed_layer_pixels
            << " mixed_valid=" << stats.mixed_layer_valid_pixels
-           << " mixed_invalid=" << stats.mixed_layer_invalid_pixels << '\n';
+           << " mixed_invalid=" << stats.mixed_layer_invalid_pixels
+           << " hud_overlay=" << stats.hud_overlay_pixels
+           << " hud_valid=" << stats.hud_overlay_valid_pixels
+           << " hud_changed_history=" << stats.hud_changed_history_pixels
+           << " hud_changed_valid=" << stats.hud_changed_history_valid_pixels << '\n';
 }
 
 bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvailable, Scenario scenario) {
@@ -1015,6 +1103,8 @@ bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvai
     if (stats.active_pixels < minimumActive) return false;
     if (stats.valid_pixels + stats.invalid_pixels != stats.active_pixels) return false;
     if (stats.mixed_layer_valid_pixels + stats.mixed_layer_invalid_pixels != stats.mixed_layer_pixels) return false;
+    if (stats.hud_overlay_valid_pixels > stats.hud_overlay_pixels) return false;
+    if (stats.hud_changed_history_valid_pixels > stats.hud_changed_history_pixels) return false;
 
     if (!historyAvailable) {
         return stats.valid_pixels == 0 && stats.invalid_pixels == stats.active_pixels &&
@@ -1041,6 +1131,13 @@ bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvai
                stats.mixed_layer_valid_pixels > stats.mixed_layer_pixels / 3u &&
                stats.mixed_layer_invalid_pixels > stats.mixed_layer_pixels / 3u &&
                stats.disoccluded_background_pixels > stats.active_pixels / 200u;
+    }
+    if (scenario == Scenario::hud_overlay) {
+        return stats.valid_pixels >= (stats.active_pixels * 95u) / 100u &&
+               stats.hud_overlay_pixels > stats.active_pixels / 100u &&
+               stats.hud_overlay_valid_pixels >= (stats.hud_overlay_pixels * 95u) / 100u &&
+               stats.hud_changed_history_pixels >= (stats.hud_overlay_pixels * 9u) / 10u &&
+               stats.hud_changed_history_valid_pixels >= (stats.hud_changed_history_pixels * 95u) / 100u;
     }
     if (scenario == Scenario::rigid_object || scenario == Scenario::disocclusion) {
         return stats.valid_pixels >= (stats.active_pixels * 9u) / 10u &&
@@ -1142,6 +1239,7 @@ bool RunDeterministicSelfTest() {
     ok &= RunScenarioCheck(Scenario::deforming_geometry, "deforming-geometry", 1.0, true, true, report);
     ok &= RunScenarioCheck(Scenario::masked_particle, "masked-particle", 1.0, true, true, report);
     ok &= RunScenarioCheck(Scenario::blended_transparency, "blended-transparency", 1.0, true, true, report);
+    ok &= RunScenarioCheck(Scenario::hud_overlay, "hud-overlay", 1.0, false, false, report);
     ok &= RunScenarioCheck(Scenario::disocclusion, "disocclusion", 1.0, true, true, report);
     report << (ok ? "RESULT PASS\n" : "RESULT FAIL\n");
 
@@ -1161,7 +1259,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         else if (wParam == VK_TAB) g_debug_view = static_cast<DebugView>((static_cast<std::uint32_t>(g_debug_view) + 1u) % static_cast<std::uint32_t>(DebugView::count));
         else if (wParam == 'R') g_pending_reset = ltr::harness::HistoryResetReason::manual;
-        else if (wParam >= '1' && wParam <= '8') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
+        else if (wParam >= '1' && wParam <= '9') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
         return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, wParam, lParam);
