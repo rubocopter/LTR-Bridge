@@ -20,6 +20,8 @@ cmake --build build-xess --config Release
 ctest --test-dir build-xess -C Release --output-on-failure
 ```
 
+For repeated measurements across resolutions, use `tools/measure_xess_native_aa.ps1`. It configures an isolated ignored build directory per resolution, runs the probe repeatedly, checks the reported GPU timing and temporary-heap lines, and writes a CSV summary under `build-root/` by default. These measurements remain experiment tooling; they do not change the probe's default `256x144`, 12-frame configuration.
+
 CMake copies only `libxess.dll` beside the local probe executable for that build. It is not added to source control or redistribution artifacts.
 
 ## Probe contract

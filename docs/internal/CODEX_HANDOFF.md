@@ -4,6 +4,8 @@ Updated: 2026-09-14.
 
 ## Repository state
 
+The current working changes add configurable positive-integer probe dimensions/frame count to the optional XeSS CMake target and add `tools/measure_xess_native_aa.ps1` for repeated resolution-based timing and temporary-heap measurements. Generated build directories and the external SDK cache are ignored artifacts and are not part of the repository state.
+
 This workspace started empty. The project now includes the first controlled D3D11 x64 Phase 1 research harness; there is still no production injector or reconstruction runtime.
 
 Core files now present:

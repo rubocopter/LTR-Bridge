@@ -24,11 +24,24 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-constexpr uint32_t kWidth = 256;
-constexpr uint32_t kHeight = 144;
-constexpr uint32_t kFrames = 12;
+#ifndef LTR_XESS_PROBE_WIDTH
+#define LTR_XESS_PROBE_WIDTH 256
+#endif
+#ifndef LTR_XESS_PROBE_HEIGHT
+#define LTR_XESS_PROBE_HEIGHT 144
+#endif
+#ifndef LTR_XESS_PROBE_FRAMES
+#define LTR_XESS_PROBE_FRAMES 12
+#endif
+
+constexpr uint32_t kWidth = LTR_XESS_PROBE_WIDTH;
+constexpr uint32_t kHeight = LTR_XESS_PROBE_HEIGHT;
+constexpr uint32_t kFrames = LTR_XESS_PROBE_FRAMES;
 constexpr uint32_t kTimingWarmupFrames = 2;
 constexpr float kObjectPixelsPerFrame = 3.0f;
+
+static_assert(kWidth > 0 && kHeight > 0, "XeSS probe dimensions must be positive");
+static_assert(kFrames > kTimingWarmupFrames, "XeSS probe needs samples after timing warm-up");
 
 void CheckHr(HRESULT hr, const char* what)
 {
