@@ -22,7 +22,7 @@ States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`,
 | Backend family | Current useful API evidence | Legacy relevance |
 | --- | --- | --- |
 | NVIDIA DLSS/DLAA via Streamline/NGX | Streamline currently targets 64-bit Windows and modern D3D11/D3D12/Vulkan-era integration with explicit temporal inputs | Strong reason for an x64 modern host when the source game is x86; still requires correct legacy data extraction. |
-| FidelityFX temporal upscaling | Current FSR SDK is 2.3.0; the current FSR API is delivered through signed DLLs and documents backend-specific functionality through DX12 | Useful D3D12-host backend candidate after a legacy provider exists; x86 binary availability remains an explicit artifact/probe question. |
+| FidelityFX temporal upscaling | Current FSR SDK is 2.3.0; the current FSR API is delivered through signed DX12 DLLs. The exact v2.3.0 loader/upscaler and the other signed DX12 DLLs were verified as PE x64 (`0x8664`). | Useful x64 D3D12-host backend candidate after a legacy provider exists. The v2.3.0 signed runtime cannot be loaded directly into an x86 process; future releases must be rechecked rather than assumed identical. |
 | XeSS-SR / Native AA | XeSS SDK 3.0.2 requires Windows x64; D3D12 is cross-vendor, while its documented D3D11 SR path is limited to Intel Arc or later; Native AA provides 1.0x | Favors a D3D12 x64 host for a generic cross-vendor backend; still needs valid legacy temporal data. |
 | OptiScaler | D3D11/D3D12/Vulkan; expects existing DLSS2+/FSR2+/XeSS-like hooks/contracts | Useful backend/ecosystem reference, not the legacy extraction solution. |
 

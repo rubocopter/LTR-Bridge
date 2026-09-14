@@ -149,7 +149,7 @@ NVIDIA explicitly requires correct jitter and motion-vector scaling; matrices su
 
 **Verified licensing/distribution:** AMD's current SDK license permits use and redistribution of the covered software in binary form subject to retaining the required notices and terms, and prohibits reverse engineering/decompilation/disassembly of those binaries. The SDK license separately enumerates source files/components with their own terms, so LTR Bridge should prefer the documented signed-binary API boundary unless and until a specific source component is selected and its exact license is reviewed.
 
-**Artifact inspection:** the current `Kits/FidelityFX/signedbin` directory exposes one DX12 loader/upscaler DLL set without architecture-specific filenames. This does not establish the PE machine type. Current x86 binary availability therefore remains unverified; do not assume either x86 support or x64 exclusivity until the actual binary headers can be inspected. D3D12 remains the strongest first modern-host target regardless.
+**Verified artifact inspection:** the exact FidelityFX SDK `v2.3.0` snapshot at commit `60f4ea81909200d8542eca14dccb2628b763a9a3` was inspected with MSVC `dumpbin /headers`. Every DLL in `Kits/FidelityFX/signedbin` reports PE machine `0x8664 (x64)`: `amd_fidelityfx_loader_dx12.dll`, `amd_fidelityfx_upscaler_dx12.dll`, `amd_fidelityfx_framegeneration_dx12.dll`, `amd_fidelityfx_denoiser_dx12.dll`, and `amd_fidelityfx_radiancecache_dx12.dll`. The currently published signed DX12 backend set therefore cannot be loaded directly into an x86 process. This strengthens the x64-host rationale for that exact SDK release; it does not prove future FidelityFX releases or separately built components are necessarily x64-only.
 
 ## Intel XeSS
 
@@ -228,7 +228,7 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 ## Immediate research gaps
 
 1. Re-check the exact backend binaries, source files and third-party notices selected for any future distribution immediately before shipping; current NVIDIA, AMD, Intel, ReShade and dgVoodoo2 primary terms are now recorded at the level needed for architecture research.
-2. Inspect the PE machine type of current AMD FSR signed DLLs when direct binary inspection is available; filenames/tree structure alone do not establish x86/x64 support.
+2. Re-check PE machine type when selecting a future AMD FSR SDK release for integration; `v2.3.0` signed DX12 DLLs are now verified x64.
 3. Run the minimal classic-D3D9 vs D3D9Ex -> D3D11 shared-texture probe before committing to a D3D9 transport architecture.
 4. Controlled measurement of copies and latency in a D3D11 x86 -> D3D12 x64 bridge.
 5. Motion-vector quality ladder on static geometry, skinned geometry, particles, and independently moving first-person/VR objects.

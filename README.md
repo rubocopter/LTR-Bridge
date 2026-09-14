@@ -18,9 +18,9 @@ The largest unresolved problem is not calling an upscaler. It is producing trust
 
 ## Initial prototype direction
 
-The first controlled D3D11 x64 harness foundation is now implemented and host-tested. It renders a known 1:1 scene with projection jitter, shader-readable depth, renderer-ground-truth camera/rigid-object motion vectors, explicit history resets, provisional view identity, and scene/depth/MV diagnostics. No reconstruction SDK is integrated yet; this stage exists to validate temporal semantics before backend behavior can hide input errors.
+The controlled D3D11 x64 harness foundation is implemented and host-tested. It renders known 1:1 scenarios with projection jitter, shader-readable depth, renderer-ground-truth motion, explicit history resets, provisional view identity, content/history diagnostics, camera+depth reconstruction and an independent synthetic optical-flow baseline.
 
-The next Phase 1 work is deterministic readback plus visual validation of the ground truth, followed by camera+depth reconstruction and optical-flow comparison before a native-AA reconstruction backend is introduced. A D3D11 x86 transport probe follows only after the controlled contract is independently trustworthy.
+The first optional real backend probe is also implemented: XeSS SDK 3.0.2 Native AA executes at 1.0x on D3D12 x64 against deterministic synthetic inputs. It now shares the harness's Halton jitter sequence and motion convention (current-to-previous render-pixel MV with jitter excluded), exercises XeSS's responsive-pixel mask, and records first-host GPU timestamp plus temporary-heap measurements. This is one host/backend result, not general support or performance validation. Phase 1 still needs broader content, resolution, visual and backend validation before legacy transport work is promoted.
 
 This order is a research hypothesis, not a permanent product architecture.
 
@@ -38,6 +38,7 @@ This order is a research hypothesis, not a permanent product architecture.
 - [docs/DEPTH.md](docs/DEPTH.md) — depth discovery, preservation and semantic requirements.
 - [docs/JITTER.md](docs/JITTER.md) — projection-jitter requirements and legacy injection constraints.
 - [docs/HARNESS.md](docs/HARNESS.md) — controlled D3D11 x64 Phase 1 harness and evidence boundary.
+- [docs/XESS_NATIVE_AA_PROBE.md](docs/XESS_NATIVE_AA_PROBE.md) — optional XeSS 3.0.2 D3D12 Native AA execution and responsive-mask probe.
 - [docs/CASE_STUDY_BIOSHOCK_VR.md](docs/CASE_STUDY_BIOSHOCK_VR.md) — x86/x64 stereo transport and game-specific temporal-provider case study.
 - [docs/CASE_STUDY_ROGUE_TRADER_DLSS.md](docs/CASE_STUDY_ROGUE_TRADER_DLSS.md) — renderer-native resolution/jitter/MV integration case study.
 - [docs/REFERENCES.md](docs/REFERENCES.md) — research snapshot and source versions.
@@ -46,7 +47,7 @@ This order is a research hypothesis, not a permanent product architecture.
 
 Repository claims use explicit maturity states: `planned`, `implemented`, `host-tested`, `live-tested`, `visual-validated`, `performance-validated`, `vr-headset-validated`, and `supported`.
 
-As of 2026-09-13 the repository contains the first controlled D3D11 x64 research harness. No production injector or reconstruction runtime is implemented.
+As of 2026-09-14 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline and an optional host-tested XeSS Native AA probe. No production injector is implemented.
 
 ## License
 

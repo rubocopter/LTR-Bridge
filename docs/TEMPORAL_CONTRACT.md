@@ -93,6 +93,8 @@ How semantic fields become DLSS/Streamline, FidelityFX, or XeSS parameters and r
 | Reactive/transparency mask | backend/version dependent | supported and important for some content | responsive-pixel mask | optional typed masks |
 | Internal/output resolution distinction | required for SR modes | required for SR modes | required for SR modes | core |
 
+The first concrete backend mapping is now **host-tested** with XeSS SDK `v3.0.2` / `8fe81bdb...`: `XESS_QUALITY_SETTING_AA` reports a 1.0x input extent, and `XESS_INIT_FLAG_RESPONSIVE_PIXEL_MASK` plus `pResponsivePixelMaskTexture` provides a real typed mapping for content whose history validity is not represented by geometry depth/MV. The XeSS probe now shares the harness's Halton-8 jitter and current-to-previous render-pixel MV convention, with jitter excluded and high-resolution MV dilated. In that coherent temporal case, the responsive path reduced final moving-HUD changed-region MAE from `8.3259` to `5.6902` on the local RTX 4070 Ti. This establishes one backend-specific mapping; it does not convert `reactive` into a mandatory universal mask or settle FidelityFX/DLSS semantics.
+
 ## Motion-vector semantics
 
 The contract must never store only `TextureHandle mv`.
@@ -154,7 +156,7 @@ VR requires at minimum an `eye_id` or equivalent view identity. Histories must n
 
 Do not define a stable public `TemporalFrameInput` C ABI until all of these exist:
 
-1. controlled DLAA or equivalent native-AA backend mapping;
+1. controlled DLAA or equivalent native-AA backend mapping — **XeSS Native AA first mapping host-tested; broader semantics still pending**;
 2. FidelityFX temporal backend mapping;
 3. XeSS Native AA or SR mapping;
 4. one x86 transport prototype;

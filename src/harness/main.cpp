@@ -1,4 +1,5 @@
 #include "temporal_frame.h"
+#include "../temporal/temporal_sequence.h"
 
 #include <Windows.h>
 #include <d3d11.h>
@@ -242,17 +243,6 @@ ComPtr<ID3DBlob> Compile(std::string_view source, const char* entry, const char*
         ThrowHr(entry, hr);
     }
     return bytecode;
-}
-
-float Halton(std::uint64_t index, std::uint32_t base) {
-    float result = 0.0f;
-    float fraction = 1.0f;
-    while (index > 0) {
-        fraction /= static_cast<float>(base);
-        result += fraction * static_cast<float>(index % base);
-        index /= base;
-    }
-    return result;
 }
 
 XMMATRIX JitterProjection(const XMMATRIX& projection, float xPixels, float yPixels) {
@@ -917,8 +907,8 @@ void Render(double seconds) {
 
     const XMMATRIX view = XMMatrixLookAtLH(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
     const XMMATRIX projection = XMMatrixPerspectiveFovLH(XMConvertToRadians(60.0f), static_cast<float>(g_width) / g_height, 0.1f, 100.0f);
-    const std::uint64_t jitterIndex = (g_frame_index % 8u) + 1u;
-    const float jitterX = Halton(jitterIndex, 2) - 0.5f, jitterY = Halton(jitterIndex, 3) - 0.5f;
+    const auto jitter = ltr::temporal::JitterForFrame(g_frame_index);
+    const float jitterX = jitter.x_pixels, jitterY = jitter.y_pixels;
     const XMMATRIX vp = view * projection;
     const XMMATRIX jitteredVp = view * JitterProjection(projection, jitterX, jitterY);
 

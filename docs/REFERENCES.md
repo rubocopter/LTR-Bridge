@@ -58,9 +58,9 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 
 - FidelityFX SDK repository: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
 - Temporal super-resolution documentation: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/main/Kits/FidelityFX/docs/techniques/super-resolution-temporal.md
-- Current SDK observed: FSR SDK `2.3.0` ("Redstone").
+- Current SDK observed: FSR SDK `2.3.0` ("Redstone") / tag commit `60f4ea81909200d8542eca14dccb2628b763a9a3`.
 - FSR API documentation: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/main/Kits/FidelityFX/docs/getting-started/ffx-api.md
-- Current FSR API is a five-function ABI delivered through provided signed DLLs; its backend-specific functionality is documented as currently DirectX 12. Exact x86 binary support remains to be verified from release artifacts rather than assumed.
+- Current FSR API is a five-function ABI delivered through provided signed DLLs; its backend-specific functionality is documented as currently DirectX 12. Direct PE-header inspection of the `v2.3.0` signed DLL set reports `0x8664 (x64)` for loader, upscaler, frame generation, denoiser and radiance-cache binaries. Treat that as an exact-release artifact fact, not a promise about future releases.
 - Current signed-binary directory: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/main/Kits/FidelityFX/signedbin
 - Primary SDK license: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/main/docs/license.md
 - Licensing note: the current license permits redistribution of covered software in binary form subject to notices/terms and prohibits reverse engineering/decompilation/disassembly. Source-file exceptions are enumerated separately and must be checked file-by-file if reused.
