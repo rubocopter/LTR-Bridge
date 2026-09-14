@@ -31,7 +31,15 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"LTRBridgeTemporalHarness";
 constexpr wchar_t kWindowTitle[] = L"LTR Bridge - D3D11 x64 Temporal Harness";
 
-enum class Scenario : std::uint32_t { static_scene = 0, camera_translate, camera_rotate, rigid_object, disocclusion, count };
+enum class Scenario : std::uint32_t {
+    static_scene = 0,
+    camera_translate,
+    camera_rotate,
+    rigid_object,
+    deforming_geometry,
+    disocclusion,
+    count
+};
 enum class DebugView : std::uint32_t { scene = 0, depth, motion, reconstructed_motion, count };
 
 struct Vertex { XMFLOAT3 position; XMFLOAT3 color; };
@@ -44,7 +52,10 @@ struct PerDrawConstants {
     XMFLOAT4X4 previous_vp_unjittered;
     XMFLOAT2 render_size;
     std::uint32_t surface_id = 0;
-    std::uint32_t padding = 0;
+    std::uint32_t padding0 = 0;
+    XMFLOAT2 deformation_phase{};
+    std::uint32_t deformation_enabled = 0;
+    std::uint32_t padding1 = 0;
 };
 
 struct DebugConstants {
@@ -81,6 +92,7 @@ XMMATRIX g_previous_world = XMMatrixIdentity();
 XMMATRIX g_previous_vp = XMMatrixIdentity();
 float g_previous_jitter_x = 0.0f;
 float g_previous_jitter_y = 0.0f;
+float g_previous_deformation_phase = 0.0f;
 float g_last_previous_jitter_x = 0.0f;
 float g_last_previous_jitter_y = 0.0f;
 std::vector<std::uint32_t> g_previous_surface_ids;
@@ -226,7 +238,10 @@ cbuffer PerDraw : register(b0) {
     row_major float4x4 previousVpUnjittered;
     float2 renderSize;
     uint surfaceId;
-    uint padding;
+    uint padding0;
+    float2 deformationPhase;
+    uint deformationEnabled;
+    uint padding1;
 };
 struct VSIn { float3 position : POSITION; float3 color : COLOR0; };
 struct VSOut {
@@ -237,9 +252,16 @@ struct VSOut {
 };
 VSOut SceneVS(VSIn input) {
     VSOut output;
-    float4 local = float4(input.position, 1.0);
-    float4 currentWorldPos = mul(local, currentWorld);
-    float4 previousWorldPos = mul(local, previousWorld);
+    float4 currentLocal = float4(input.position, 1.0);
+    float4 previousLocal = currentLocal;
+    if (deformationEnabled != 0) {
+        currentLocal.y += sin(input.position.x * 2.4 + deformationPhase.x) * 0.42;
+        previousLocal.y += sin(input.position.x * 2.4 + deformationPhase.y) * 0.42;
+        currentLocal.x += cos(input.position.y * 1.7 + deformationPhase.x) * 0.14;
+        previousLocal.x += cos(input.position.y * 1.7 + deformationPhase.y) * 0.14;
+    }
+    float4 currentWorldPos = mul(currentLocal, currentWorld);
+    float4 previousWorldPos = mul(previousLocal, previousWorld);
     output.position = mul(currentWorldPos, currentVpJittered);
     output.currentNoJitter = mul(currentWorldPos, currentVpUnjittered);
     output.previousNoJitter = mul(previousWorldPos, previousVpUnjittered);
@@ -435,13 +457,17 @@ void CreateDeviceAndPipeline() {
 }
 
 void UploadPerDraw(const XMMATRIX& world, const XMMATRIX& previousWorld, const XMMATRIX& currentJittered,
-                   const XMMATRIX& currentUnjittered, const XMMATRIX& previousVp, std::uint32_t surfaceId) {
+                   const XMMATRIX& currentUnjittered, const XMMATRIX& previousVp, std::uint32_t surfaceId,
+                   float currentDeformation = 0.0f, float previousDeformation = 0.0f,
+                   bool deformationEnabled = false) {
     PerDrawConstants constants{};
     XMStoreFloat4x4(&constants.current_world, world); XMStoreFloat4x4(&constants.previous_world, previousWorld);
     XMStoreFloat4x4(&constants.current_vp_jittered, currentJittered); XMStoreFloat4x4(&constants.current_vp_unjittered, currentUnjittered);
     XMStoreFloat4x4(&constants.previous_vp_unjittered, previousVp);
     constants.render_size = { static_cast<float>(g_width), static_cast<float>(g_height) };
     constants.surface_id = surfaceId;
+    constants.deformation_phase = { currentDeformation, previousDeformation };
+    constants.deformation_enabled = deformationEnabled ? 1u : 0u;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     CheckHr(g_context->Map(g_per_draw_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map(per-draw)");
     std::memcpy(mapped.pData, &constants, sizeof(constants)); g_context->Unmap(g_per_draw_buffer.Get(), 0);
@@ -711,6 +737,7 @@ const wchar_t* ScenarioName() {
     switch (g_scenario) {
     case Scenario::static_scene: return L"static"; case Scenario::camera_translate: return L"camera-translate";
     case Scenario::camera_rotate: return L"camera-rotate"; case Scenario::rigid_object: return L"rigid-object";
+    case Scenario::deforming_geometry: return L"deforming-geometry";
     case Scenario::disocclusion: return L"disocclusion"; default: return L"unknown";
     }
 }
@@ -727,7 +754,7 @@ const wchar_t* ViewName() {
 
 void UpdateTitle() {
     wchar_t title[384]{};
-    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-5 scenario, Tab debug, R reset",
+    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-6 scenario, Tab debug, R reset",
                ScenarioName(), ViewName(), static_cast<unsigned long long>(g_last_frame.identity.frame_index),
                g_last_frame.identity.history_generation, g_last_frame.jitter_x_pixels, g_last_frame.jitter_y_pixels);
     SetWindowTextW(g_window, title);
@@ -746,12 +773,15 @@ void Render(double seconds) {
     XMVECTOR eye = XMVectorSet(0.0f, 1.4f, -5.0f, 1.0f);
     XMVECTOR target = XMVectorZero();
     XMMATRIX world = XMMatrixIdentity();
+    float deformationPhase = 0.0f;
     if (g_scenario == Scenario::camera_translate) {
         const float x = std::sin(t * 0.75f) * 1.25f; eye = XMVectorSet(x, 1.4f, -5.0f, 1.0f); target = XMVectorSet(x * 0.2f, 0.0f, 0.0f, 1.0f);
     } else if (g_scenario == Scenario::camera_rotate) {
         const float a = std::sin(t * 0.45f) * 0.55f; eye = XMVectorSet(std::sin(a) * 5.0f, 1.4f, -std::cos(a) * 5.0f, 1.0f);
     } else if (g_scenario == Scenario::rigid_object) {
         world = XMMatrixRotationY(t) * XMMatrixTranslation(std::sin(t) * 1.5f, 0.0f, 0.0f);
+    } else if (g_scenario == Scenario::deforming_geometry) {
+        deformationPhase = t * 2.0f;
     } else if (g_scenario == Scenario::disocclusion) {
         world = XMMatrixTranslation(-1.6f + 3.2f * t, 0.0f, 0.0f);
     }
@@ -774,10 +804,12 @@ void Render(double seconds) {
     g_last_frame.motion.jitter_included = false;
 
     XMMATRIX previousWorld = g_previous_world, previousVp = g_previous_vp;
+    float previousDeformationPhase = g_previous_deformation_phase;
     g_last_previous_jitter_x = g_previous_jitter_x;
     g_last_previous_jitter_y = g_previous_jitter_y;
     if (!g_previous_valid || g_pending_reset != ltr::harness::HistoryResetReason::none) {
         previousWorld = world; previousVp = vp;
+        previousDeformationPhase = deformationPhase;
         g_last_previous_jitter_x = jitterX;
         g_last_previous_jitter_y = jitterY;
     }
@@ -800,7 +832,10 @@ void Render(double seconds) {
     const UINT stride = sizeof(Vertex), offset = 0; ID3D11Buffer* vb = g_vertex_buffer.Get();
     g_context->IASetInputLayout(g_input_layout.Get()); g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     g_context->IASetVertexBuffers(0, 1, &vb, &stride, &offset); g_context->VSSetShader(g_scene_vs.Get(), nullptr, 0); g_context->PSSetShader(g_scene_ps.Get(), nullptr, 0);
-    UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp, 2u); g_context->Draw(3, 0);
+    const bool deformationEnabled = g_scenario == Scenario::deforming_geometry;
+    UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp, 2u,
+                  deformationPhase, previousDeformationPhase, deformationEnabled);
+    g_context->Draw(3, 0);
     UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp, 1u); g_context->Draw(3, 3);
 
     g_context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -842,6 +877,7 @@ void Render(double seconds) {
 
     g_previous_world = world; g_previous_vp = vp;
     g_previous_jitter_x = jitterX; g_previous_jitter_y = jitterY;
+    g_previous_deformation_phase = deformationPhase;
     g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
     ++g_frame_index; UpdateTitle();
 }
@@ -902,6 +938,10 @@ bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvai
         return stats.valid_pixels >= (stats.active_pixels * 999u) / 1000u &&
                stats.disoccluded_background_pixels <= stats.active_pixels / 1000u;
     }
+    if (scenario == Scenario::deforming_geometry) {
+        return stats.valid_pixels >= (stats.active_pixels * 95u) / 100u &&
+               stats.disoccluded_background_pixels > stats.active_pixels / 500u;
+    }
     if (scenario == Scenario::rigid_object || scenario == Scenario::disocclusion) {
         return stats.valid_pixels >= (stats.active_pixels * 9u) / 10u &&
                stats.disoccluded_background_pixels > stats.active_pixels / 100u;
@@ -949,7 +989,9 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     g_scenario = scenario;
     g_pending_reset = ltr::harness::HistoryResetReason::scenario_change;
     const bool expectCameraMotion = scenario == Scenario::camera_translate || scenario == Scenario::camera_rotate;
-    const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object || scenario == Scenario::disocclusion;
+    const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object ||
+                                            scenario == Scenario::deforming_geometry ||
+                                            scenario == Scenario::disocclusion;
     const std::uint32_t expectedGeneration = g_history_generation + 1u;
 
     Render(0.0);
@@ -994,6 +1036,7 @@ bool RunDeterministicSelfTest() {
     ok &= RunScenarioCheck(Scenario::camera_translate, "camera-translate", 1.0, true, false, report);
     ok &= RunScenarioCheck(Scenario::camera_rotate, "camera-rotate", 1.0, true, false, report);
     ok &= RunScenarioCheck(Scenario::rigid_object, "rigid-object", 1.0, true, true, report);
+    ok &= RunScenarioCheck(Scenario::deforming_geometry, "deforming-geometry", 1.0, true, true, report);
     ok &= RunScenarioCheck(Scenario::disocclusion, "disocclusion", 1.0, true, true, report);
     report << (ok ? "RESULT PASS\n" : "RESULT FAIL\n");
 
@@ -1013,7 +1056,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         else if (wParam == VK_TAB) g_debug_view = static_cast<DebugView>((static_cast<std::uint32_t>(g_debug_view) + 1u) % static_cast<std::uint32_t>(DebugView::count));
         else if (wParam == 'R') g_pending_reset = ltr::harness::HistoryResetReason::manual;
-        else if (wParam >= '1' && wParam <= '5') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
+        else if (wParam >= '1' && wParam <= '6') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
         return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, wParam, lParam);
