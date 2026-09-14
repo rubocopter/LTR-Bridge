@@ -38,6 +38,7 @@ enum class Scenario : std::uint32_t {
     rigid_object,
     deforming_geometry,
     masked_particle,
+    blended_transparency,
     disocclusion,
     count
 };
@@ -57,6 +58,7 @@ struct PerDrawConstants {
     XMFLOAT2 deformation_phase{};
     std::uint32_t deformation_enabled = 0;
     std::uint32_t cutout_enabled = 0;
+    XMFLOAT4 material_params{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct DebugConstants {
@@ -129,6 +131,8 @@ ComPtr<ID3D11Buffer> g_per_draw_buffer;
 ComPtr<ID3D11Buffer> g_debug_buffer;
 ComPtr<ID3D11Buffer> g_reconstruct_buffer;
 ComPtr<ID3D11SamplerState> g_sampler;
+ComPtr<ID3D11BlendState> g_transparent_blend_state;
+ComPtr<ID3D11DepthStencilState> g_transparent_depth_state;
 
 struct ReadbackStats {
     std::uint64_t active_pixels = 0;
@@ -145,6 +149,9 @@ struct HistoryValidityStats {
     std::uint64_t surface_mismatch_pixels = 0;
     std::uint64_t out_of_bounds_pixels = 0;
     std::uint64_t disoccluded_background_pixels = 0;
+    std::uint64_t mixed_layer_pixels = 0;
+    std::uint64_t mixed_layer_valid_pixels = 0;
+    std::uint64_t mixed_layer_invalid_pixels = 0;
 };
 
 struct ReconstructionStats {
@@ -243,6 +250,7 @@ cbuffer PerDraw : register(b0) {
     float2 deformationPhase;
     uint deformationEnabled;
     uint cutoutEnabled;
+    float4 materialParams;
 };
 struct VSIn { float3 position : POSITION; float3 color : COLOR0; };
 struct VSOut {
@@ -279,7 +287,7 @@ PSOut ScenePS(VSOut input) {
         clip(0.28 - length(cell));
     }
     PSOut output;
-    output.color = float4(input.color, 1.0);
+    output.color = float4(input.color, materialParams.x);
     float2 currentNdc = input.currentNoJitter.xy / input.currentNoJitter.w;
     float2 previousNdc = input.previousNoJitter.xy / input.previousNoJitter.w;
     float2 currentPixels = float2((currentNdc.x * 0.5 + 0.5) * renderSize.x,
@@ -461,13 +469,32 @@ void CreateDeviceAndPipeline() {
     D3D11_SAMPLER_DESC sampler{}; sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sampler.MaxLOD = D3D11_FLOAT32_MAX;
     CheckHr(g_device->CreateSamplerState(&sampler, &g_sampler), "CreateSamplerState");
+
+    D3D11_BLEND_DESC transparencyBlend{};
+    transparencyBlend.IndependentBlendEnable = TRUE;
+    for (auto& target : transparencyBlend.RenderTarget) target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    transparencyBlend.RenderTarget[0].BlendEnable = TRUE;
+    transparencyBlend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    transparencyBlend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    transparencyBlend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    transparencyBlend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    transparencyBlend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+    transparencyBlend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    CheckHr(g_device->CreateBlendState(&transparencyBlend, &g_transparent_blend_state), "CreateBlendState(transparency)");
+
+    D3D11_DEPTH_STENCIL_DESC transparencyDepth{};
+    transparencyDepth.DepthEnable = TRUE;
+    transparencyDepth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    transparencyDepth.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+    CheckHr(g_device->CreateDepthStencilState(&transparencyDepth, &g_transparent_depth_state), "CreateDepthStencilState(transparency)");
     CreateFrameResources(g_width, g_height);
 }
 
 void UploadPerDraw(const XMMATRIX& world, const XMMATRIX& previousWorld, const XMMATRIX& currentJittered,
                    const XMMATRIX& currentUnjittered, const XMMATRIX& previousVp, std::uint32_t surfaceId,
                    float currentDeformation = 0.0f, float previousDeformation = 0.0f,
-                   bool deformationEnabled = false, bool cutoutEnabled = false) {
+                   bool deformationEnabled = false, bool cutoutEnabled = false,
+                   float layerOpacity = 1.0f) {
     PerDrawConstants constants{};
     XMStoreFloat4x4(&constants.current_world, world); XMStoreFloat4x4(&constants.previous_world, previousWorld);
     XMStoreFloat4x4(&constants.current_vp_jittered, currentJittered); XMStoreFloat4x4(&constants.current_vp_unjittered, currentUnjittered);
@@ -477,6 +504,7 @@ void UploadPerDraw(const XMMATRIX& world, const XMMATRIX& previousWorld, const X
     constants.deformation_phase = { currentDeformation, previousDeformation };
     constants.deformation_enabled = deformationEnabled ? 1u : 0u;
     constants.cutout_enabled = cutoutEnabled ? 1u : 0u;
+    constants.material_params = { layerOpacity, 0.0f, 0.0f, 0.0f };
     D3D11_MAPPED_SUBRESOURCE mapped{};
     CheckHr(g_context->Map(g_per_draw_buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map(per-draw)");
     std::memcpy(mapped.pData, &constants, sizeof(constants)); g_context->Unmap(g_per_draw_buffer.Get(), 0);
@@ -494,6 +522,25 @@ ComPtr<ID3D11Texture2D> CreateReadbackTexture(ID3D11Texture2D* source) {
     ComPtr<ID3D11Texture2D> staging;
     CheckHr(g_device->CreateTexture2D(&desc, nullptr, &staging), "CreateTexture2D(readback)");
     return staging;
+}
+
+void WriteSceneDiagnostic(const char* diagnosticLabel) {
+    const auto sceneReadback = CreateReadbackTexture(g_scene_color.Get());
+    g_context->CopyResource(sceneReadback.Get(), g_scene_color.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    CheckHr(g_context->Map(sceneReadback.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map(scene diagnostic)");
+
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(g_width) * g_height);
+    for (std::uint32_t y = 0; y < g_height; ++y) {
+        const auto* row = static_cast<const std::uint8_t*>(mapped.pData) + y * mapped.RowPitch;
+        for (std::uint32_t x = 0; x < g_width; ++x) {
+            const auto* pixel = row + static_cast<std::size_t>(x) * 4u;
+            pixels[static_cast<std::size_t>(y) * g_width + x] =
+                PackBgra(pixel[0] / 255.0f, pixel[1] / 255.0f, pixel[2] / 255.0f);
+        }
+    }
+    g_context->Unmap(sceneReadback.Get(), 0);
+    WriteBitmap32(std::string("ltr_diag_") + diagnosticLabel + "_scene.bmp", pixels);
 }
 
 ReadbackStats ReadbackGroundTruth(const char* diagnosticLabel = nullptr) {
@@ -604,6 +651,8 @@ HistoryValidityStats ReadbackHistoryValidity(bool historyAvailable, const char* 
             const std::uint32_t currentSurface = surfaceRow[x];
             currentSurfaceIds[index] = currentSurface;
             ++stats.active_pixels;
+            const bool mixedLayer = currentSurface == 3u;
+            if (mixedLayer) ++stats.mixed_layer_pixels;
 
             bool valid = false;
             bool outOfBounds = false;
@@ -625,15 +674,19 @@ HistoryValidityStats ReadbackHistoryValidity(bool historyAvailable, const char* 
 
             if (valid) {
                 ++stats.valid_pixels;
+                if (mixedLayer) ++stats.mixed_layer_valid_pixels;
                 if (diagnosticLabel) diagnosticPixels[index] = PackBgra(0.0f, 1.0f, 0.0f);
             } else {
                 ++stats.invalid_pixels;
+                if (mixedLayer) ++stats.mixed_layer_invalid_pixels;
                 if (outOfBounds) {
                     ++stats.out_of_bounds_pixels;
                     if (diagnosticLabel) diagnosticPixels[index] = PackBgra(1.0f, 1.0f, 0.0f);
                 } else if (previousSurfaceAvailable) {
                     ++stats.surface_mismatch_pixels;
-                    if (currentSurface == 1u && previousSurface == 2u) ++stats.disoccluded_background_pixels;
+                    if (currentSurface == 1u && previousSurface != 0u && previousSurface != 1u) {
+                        ++stats.disoccluded_background_pixels;
+                    }
                     if (diagnosticLabel) diagnosticPixels[index] = PackBgra(1.0f, 0.0f, 0.0f);
                 } else if (diagnosticLabel) {
                     diagnosticPixels[index] = PackBgra(0.25f, 0.25f, 0.25f);
@@ -748,6 +801,7 @@ const wchar_t* ScenarioName() {
     case Scenario::camera_rotate: return L"camera-rotate"; case Scenario::rigid_object: return L"rigid-object";
     case Scenario::deforming_geometry: return L"deforming-geometry";
     case Scenario::masked_particle: return L"masked-particle";
+    case Scenario::blended_transparency: return L"blended-transparency";
     case Scenario::disocclusion: return L"disocclusion"; default: return L"unknown";
     }
 }
@@ -764,7 +818,7 @@ const wchar_t* ViewName() {
 
 void UpdateTitle() {
     wchar_t title[384]{};
-    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-7 scenario, Tab debug, R reset",
+    swprintf_s(title, L"LTR Bridge | scenario=%s | view=%s | frame=%llu | history=%u | jitter=(%.3f, %.3f) px | 1-8 scenario, Tab debug, R reset",
                ScenarioName(), ViewName(), static_cast<unsigned long long>(g_last_frame.identity.frame_index),
                g_last_frame.identity.history_generation, g_last_frame.jitter_x_pixels, g_last_frame.jitter_y_pixels);
     SetWindowTextW(g_window, title);
@@ -794,6 +848,8 @@ void Render(double seconds) {
         deformationPhase = t * 2.0f;
     } else if (g_scenario == Scenario::masked_particle) {
         world = XMMatrixTranslation(-0.9f + 1.8f * t, std::sin(t * 1.7f) * 0.18f, 0.0f);
+    } else if (g_scenario == Scenario::blended_transparency) {
+        world = XMMatrixTranslation(-0.75f + 1.5f * t, std::sin(t * 1.25f) * 0.12f, 0.0f);
     } else if (g_scenario == Scenario::disocclusion) {
         world = XMMatrixTranslation(-1.6f + 3.2f * t, 0.0f, 0.0f);
     }
@@ -846,10 +902,26 @@ void Render(double seconds) {
     g_context->IASetVertexBuffers(0, 1, &vb, &stride, &offset); g_context->VSSetShader(g_scene_vs.Get(), nullptr, 0); g_context->PSSetShader(g_scene_ps.Get(), nullptr, 0);
     const bool deformationEnabled = g_scenario == Scenario::deforming_geometry;
     const bool cutoutEnabled = g_scenario == Scenario::masked_particle;
-    UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp, 2u,
-                  deformationPhase, previousDeformationPhase, deformationEnabled, cutoutEnabled);
-    g_context->Draw(3, 0);
-    UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp, 1u); g_context->Draw(3, 3);
+    const bool blendedTransparency = g_scenario == Scenario::blended_transparency;
+    if (blendedTransparency) {
+        UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp, 1u);
+        g_context->Draw(3, 3);
+
+        const float blendFactor[4]{};
+        g_context->OMSetBlendState(g_transparent_blend_state.Get(), blendFactor, 0xFFFFFFFFu);
+        g_context->OMSetDepthStencilState(g_transparent_depth_state.Get(), 0u);
+        UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp, 3u,
+                      0.0f, 0.0f, false, false, 0.45f);
+        g_context->Draw(3, 0);
+        g_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFu);
+        g_context->OMSetDepthStencilState(nullptr, 0u);
+    } else {
+        UploadPerDraw(world, previousWorld, jitteredVp, vp, previousVp, 2u,
+                      deformationPhase, previousDeformationPhase, deformationEnabled, cutoutEnabled);
+        g_context->Draw(3, 0);
+        UploadPerDraw(XMMatrixIdentity(), XMMatrixIdentity(), jitteredVp, vp, previousVp, 1u);
+        g_context->Draw(3, 3);
+    }
 
     g_context->OMSetRenderTargets(0, nullptr, nullptr);
     const float reconstructedClear[4]{};
@@ -932,13 +1004,17 @@ void AppendHistoryValidityStats(std::ostringstream& report, const char* label, c
            << " invalid=" << stats.invalid_pixels
            << " mismatch=" << stats.surface_mismatch_pixels
            << " out_of_bounds=" << stats.out_of_bounds_pixels
-           << " disoccluded_background=" << stats.disoccluded_background_pixels << '\n';
+           << " disoccluded_background=" << stats.disoccluded_background_pixels
+           << " mixed_layer=" << stats.mixed_layer_pixels
+           << " mixed_valid=" << stats.mixed_layer_valid_pixels
+           << " mixed_invalid=" << stats.mixed_layer_invalid_pixels << '\n';
 }
 
 bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvailable, Scenario scenario) {
     const std::uint64_t minimumActive = static_cast<std::uint64_t>(g_width) * g_height / 100u;
     if (stats.active_pixels < minimumActive) return false;
     if (stats.valid_pixels + stats.invalid_pixels != stats.active_pixels) return false;
+    if (stats.mixed_layer_valid_pixels + stats.mixed_layer_invalid_pixels != stats.mixed_layer_pixels) return false;
 
     if (!historyAvailable) {
         return stats.valid_pixels == 0 && stats.invalid_pixels == stats.active_pixels &&
@@ -957,6 +1033,13 @@ bool ValidateHistoryValidity(const HistoryValidityStats& stats, bool historyAvai
     }
     if (scenario == Scenario::masked_particle) {
         return stats.valid_pixels >= (stats.active_pixels * 95u) / 100u &&
+               stats.disoccluded_background_pixels > stats.active_pixels / 200u;
+    }
+    if (scenario == Scenario::blended_transparency) {
+        return stats.valid_pixels >= (stats.active_pixels * 9u) / 10u &&
+               stats.mixed_layer_pixels > stats.active_pixels / 100u &&
+               stats.mixed_layer_valid_pixels > stats.mixed_layer_pixels / 3u &&
+               stats.mixed_layer_invalid_pixels > stats.mixed_layer_pixels / 3u &&
                stats.disoccluded_background_pixels > stats.active_pixels / 200u;
     }
     if (scenario == Scenario::rigid_object || scenario == Scenario::disocclusion) {
@@ -1009,6 +1092,7 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object ||
                                             scenario == Scenario::deforming_geometry ||
                                             scenario == Scenario::masked_particle ||
+                                            scenario == Scenario::blended_transparency ||
                                             scenario == Scenario::disocclusion;
     const std::uint32_t expectedGeneration = g_history_generation + 1u;
 
@@ -1027,6 +1111,7 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
 
     const std::uint64_t expectedFrame = g_last_frame.identity.frame_index + 1u;
     Render(secondTime);
+    WriteSceneDiagnostic(name);
     const ReadbackStats steadyStats = ReadbackGroundTruth(name);
     const ReconstructionStats steadyReconstructionStats = ReadbackReconstructionComparison(name);
     const HistoryValidityStats steadyHistoryStats = ReadbackHistoryValidity(true, name);
@@ -1056,6 +1141,7 @@ bool RunDeterministicSelfTest() {
     ok &= RunScenarioCheck(Scenario::rigid_object, "rigid-object", 1.0, true, true, report);
     ok &= RunScenarioCheck(Scenario::deforming_geometry, "deforming-geometry", 1.0, true, true, report);
     ok &= RunScenarioCheck(Scenario::masked_particle, "masked-particle", 1.0, true, true, report);
+    ok &= RunScenarioCheck(Scenario::blended_transparency, "blended-transparency", 1.0, true, true, report);
     ok &= RunScenarioCheck(Scenario::disocclusion, "disocclusion", 1.0, true, true, report);
     report << (ok ? "RESULT PASS\n" : "RESULT FAIL\n");
 
@@ -1075,7 +1161,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         else if (wParam == VK_TAB) g_debug_view = static_cast<DebugView>((static_cast<std::uint32_t>(g_debug_view) + 1u) % static_cast<std::uint32_t>(DebugView::count));
         else if (wParam == 'R') g_pending_reset = ltr::harness::HistoryResetReason::manual;
-        else if (wParam >= '1' && wParam <= '7') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
+        else if (wParam >= '1' && wParam <= '8') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
         return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, wParam, lParam);
