@@ -27,6 +27,7 @@ namespace {
 }
 struct Options {
   std::wstring producer, negative;
+  std::uint32_t backpressure_depth = 0;
 };
 [[nodiscard]] bool parse(int argc, wchar_t **argv, Options &o) {
   for (int i = 1; i < argc; ++i) {
@@ -35,10 +36,20 @@ struct Options {
       o.producer = argv[++i];
     else if (k == L"--negative" && i + 1 < argc)
       o.negative = argv[++i];
-    else
+    else if (k == L"--backpressure-depth" && i + 1 < argc) {
+      try {
+        const auto depth = std::stoul(argv[++i]);
+        if (depth < 1U || depth > 2U)
+          return false;
+        o.backpressure_depth = depth;
+      } catch (...) {
+        return false;
+      }
+    } else
       return false;
   }
-  return !o.producer.empty();
+  return !o.producer.empty() &&
+         (o.negative.empty() || o.backpressure_depth == 0U);
 }
 [[nodiscard]] ComPtr<ID3D12Resource> texture(ID3D12Device *d, std::uint32_t w,
                                              std::uint32_t h) {
@@ -81,7 +92,7 @@ int wmain(int argc, wchar_t **argv) {
         << "usage: consumer --producer <x86-producer> [--negative "
            "protocol|adapter|resource-contract|host-stall|dynamic-control|"
            "client-termination|device-removal|host-termination]"
-           "\n";
+           " [--backpressure-depth 1|2]\n";
     return 2;
   }
   ComPtr<ID3D12Device> dev;
@@ -109,6 +120,16 @@ int wmain(int argc, wchar_t **argv) {
                                      &rh[0]),
              "CreateSharedHandle(resource0)"))
     return 6;
+  if (o.backpressure_depth == 2U) {
+    res[1] = texture(dev.Get(), ltr::bridge_probe::kGenerations[0].width,
+                     ltr::bridge_probe::kGenerations[0].height);
+    if (!res[1])
+      return 5;
+    if (!check(dev->CreateSharedHandle(res[1].Get(), &sa, GENERIC_ALL, nullptr,
+                                       &rh[1]),
+               "CreateSharedHandle(backpressure-resource1)"))
+      return 6;
+  }
   HANDLE control_read = nullptr, control_write = nullptr;
   if (!CreatePipe(&control_read, &control_write, &sa, 0)) {
     std::cerr << "CreatePipe(control) failed error=" << GetLastError() << "\n";
@@ -181,8 +202,12 @@ int wmain(int argc, wchar_t **argv) {
   std::wostringstream cmd;
   cmd << quote(o.producer) << L" --resource0-handle "
       << static_cast<unsigned long long>(
-             reinterpret_cast<std::uintptr_t>(rh[0]))
-      << L" --done-fence-handle "
+             reinterpret_cast<std::uintptr_t>(rh[0]));
+  if (o.backpressure_depth == 2U)
+    cmd << L" --resource1-handle "
+        << static_cast<unsigned long long>(
+               reinterpret_cast<std::uintptr_t>(rh[1]));
+  cmd << L" --done-fence-handle "
       << static_cast<unsigned long long>(
              reinterpret_cast<std::uintptr_t>(done_fence_handle))
       << L" --control-read-handle "
@@ -197,7 +222,8 @@ int wmain(int argc, wchar_t **argv) {
       << L" --protocol-version " << protocol << L" --frames-per-generation "
       << ltr::bridge_probe::kFramesPerGeneration << L" --expect-host-stall "
       << expect_host_stall << L" --expect-host-termination "
-      << expect_host_termination;
+      << expect_host_termination << L" --backpressure-depth "
+      << o.backpressure_depth;
   std::wstring line = cmd.str();
   STARTUPINFOW si{};
   si.cb = sizeof(si);
@@ -217,6 +243,10 @@ int wmain(int argc, wchar_t **argv) {
   control_read = nullptr;
   CloseHandle(rh[0]);
   rh[0] = nullptr;
+  if (rh[1]) {
+    CloseHandle(rh[1]);
+    rh[1] = nullptr;
+  }
   CloseHandle(done_fence_handle);
   done_fence_handle = nullptr;
   if (expected && !deferred_negative) {
@@ -271,6 +301,10 @@ int wmain(int argc, wchar_t **argv) {
               << std::flush;
     TerminateProcess(GetCurrentProcess(), 24);
     return 24;
+  }
+  if (o.backpressure_depth) {
+    CloseHandle(control_write);
+    control_write = nullptr;
   }
   const char *shader_src =
       R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,v.a);})";
@@ -330,6 +364,8 @@ int wmain(int argc, wchar_t **argv) {
     dev->CreateUnorderedAccessView(res[g].Get(), nullptr, &u, h);
   };
   create_uav(0);
+  if (o.backpressure_depth == 2U)
+    create_uav(1);
   const std::uint32_t total = ltr::bridge_probe::kFramesPerGeneration *
                               ltr::bridge_probe::kGenerationCount;
   D3D12_QUERY_HEAP_DESC qh{};
@@ -358,140 +394,23 @@ int wmain(int argc, wchar_t **argv) {
   std::vector<ComPtr<ID3D12CommandAllocator>> alloc(total);
   std::vector<ComPtr<ID3D12GraphicsCommandList>> lists(total);
   std::uint32_t frame = 0;
-  for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
-    if (g == 1) {
-      HANDLE transition_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-      if (!transition_event)
-        return 19;
-      if (done_fence->GetCompletedValue() < frame &&
-          (!check(done_fence->SetEventOnCompletion(frame, transition_event),
-                  "SetEventOnCompletion(generation0-done)") ||
-           WaitForSingleObject(transition_event, 30000) != WAIT_OBJECT_0)) {
-        CloseHandle(transition_event);
-        std::cerr << "generation transition wait failed\n";
-        return 19;
-      }
-      CloseHandle(transition_event);
-
-      res[0].Reset();
-      if (o.negative == L"client-termination") {
-        if (!TerminateProcess(pi.hProcess, expected)) {
-          std::cerr << "TerminateProcess(client) failed error="
-                    << GetLastError() << "\n";
-          return 19;
-        }
-        CloseHandle(control_write);
-        control_write = nullptr;
-        const DWORD code = wait_process(pi, 10000);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        if (code != expected) {
-          std::wcerr << L"negative_mode=" << o.negative << L" expected_exit="
-                     << expected << L" actual_exit=" << code
-                     << L"\nRESULT FAIL\n";
-          return 19;
-        }
-        std::wcout << L"negative_mode=" << o.negative << L" expected_exit="
-                   << expected << L" actual_exit=" << code
-                   << L" cleanup=completed\nRESULT PASS\n";
-        return 0;
-      }
-      if (o.negative == L"device-removal") {
-        ComPtr<ID3D12Device5> dev5;
-        if (!check(dev.As(&dev5), "ID3D12Device5"))
-          return 19;
-        dev5->RemoveDevice();
-        const HRESULT removed = dev->GetDeviceRemovedReason();
-        CloseHandle(control_write);
-        control_write = nullptr;
-        const DWORD code = wait_process(pi, 10000);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        if (SUCCEEDED(removed) || code != expected) {
-          std::cerr << "negative_mode=device-removal device_removed_hr=0x"
-                    << std::hex << static_cast<unsigned long>(removed)
-                    << std::dec << " expected_producer_exit=" << expected
-                    << " actual_producer_exit=" << code << "\nRESULT FAIL\n";
-          return 19;
-        }
-        std::cout << "negative_mode=device-removal device_removed_hr=0x"
-                  << std::hex << static_cast<unsigned long>(removed) << std::dec
-                  << " producer_exit=" << code
-                  << " cleanup=completed\nRESULT PASS\n";
-        return 0;
-      }
-      res[g] = texture(dev.Get(), specs[g].width, specs[g].height);
-      if (!res[g])
-        return 19;
-      if (!check(dev->CreateSharedHandle(res[g].Get(), nullptr, GENERIC_ALL,
-                                         nullptr, &rh[g]),
-                 "CreateSharedHandle(dynamic-resource)"))
-        return 19;
-      HANDLE remote_handle = nullptr;
-      if (!DuplicateHandle(GetCurrentProcess(), rh[g], pi.hProcess,
-                           &remote_handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-        std::cerr << "DuplicateHandle(dynamic-resource) failed error="
-                  << GetLastError() << "\n";
-        CloseHandle(rh[g]);
-        return 19;
-      }
-      CloseHandle(rh[g]);
-      rh[g] = nullptr;
-      ltr::bridge_probe::DynamicResourceMessage message{};
-      message.magic = ltr::bridge_probe::kControlMagic;
-      message.protocol = ltr::bridge_probe::kProtocolVersion;
-      message.generation = deferred_negative ? g + 1U : g;
-      message.width = specs[g].width;
-      message.height = specs[g].height;
-      message.resource_handle = static_cast<std::uint64_t>(
-          reinterpret_cast<std::uintptr_t>(remote_handle));
-      DWORD bytes = 0;
-      if (!WriteFile(control_write, &message, sizeof(message), &bytes,
-                     nullptr) ||
-          bytes != sizeof(message)) {
-        std::cerr << "WriteFile(dynamic-resource) failed bytes=" << bytes
-                  << " error=" << GetLastError() << "\n";
-        CloseHandle(control_write);
-        control_write = nullptr;
-        return 19;
-      }
-      CloseHandle(control_write);
-      control_write = nullptr;
-      if (deferred_negative) {
-        const DWORD code = wait_process(pi, 10000);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        if (code != expected) {
-          std::wcerr << L"negative_mode=" << o.negative << L" expected_exit="
-                     << expected << L" actual_exit=" << code
-                     << L"\nRESULT FAIL\n";
-          return 19;
-        }
-        std::wcout << L"negative_mode=" << o.negative << L" expected_exit="
-                   << expected << L" actual_exit=" << code
-                   << L"\nRESULT PASS\n";
-        return 0;
-      }
-      create_uav(g);
-      std::cout << "dynamic_resource_sent generation=" << g
-                << " size=" << specs[g].width << "x" << specs[g].height
-                << " after_completed_frame=" << frame << "\n";
-    }
-    for (std::uint32_t local = 0;
-         local < ltr::bridge_probe::kFramesPerGeneration; ++local, ++frame) {
+  if (o.backpressure_depth) {
+    Sleep(50);
+    for (; frame < total; ++frame) {
+      const std::uint32_t slot = frame % o.backpressure_depth;
       if (!check(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                              IID_PPV_ARGS(&alloc[frame])),
-                 "CreateCommandAllocator"))
+                 "CreateCommandAllocator(backpressure)"))
         return 19;
       if (!check(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
                                         alloc[frame].Get(), pso.Get(),
                                         IID_PPV_ARGS(&lists[frame])),
-                 "CreateCommandList"))
+                 "CreateCommandList(backpressure)"))
         return 20;
       auto *l = lists[frame].Get();
       D3D12_RESOURCE_BARRIER b{};
       b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      b.Transition.pResource = res[g].Get();
+      b.Transition.pResource = res[slot].Get();
       b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
       b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -501,30 +420,200 @@ int wmain(int argc, wchar_t **argv) {
       l->SetComputeRootSignature(root.Get());
       l->SetPipelineState(pso.Get());
       auto gh = dh->GetGPUDescriptorHandleForHeapStart();
-      gh.ptr += static_cast<UINT64>(g) * ds;
+      gh.ptr += static_cast<UINT64>(slot) * ds;
       l->SetComputeRootDescriptorTable(0, gh);
       l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frame * 2U);
-      l->Dispatch((specs[g].width + 7U) / 8U, (specs[g].height + 7U) / 8U, 1);
+      l->Dispatch((specs[0].width + 7U) / 8U, (specs[0].height + 7U) / 8U, 1);
       l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                   frame * 2U + 1U);
       D3D12_RESOURCE_BARRIER ub{};
       ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-      ub.UAV.pResource = res[g].Get();
+      ub.UAV.pResource = res[slot].Get();
       l->ResourceBarrier(1, &ub);
       std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
       l->ResourceBarrier(1, &b);
-      if (!check(l->Close(), "CommandListClose"))
+      if (!check(l->Close(), "CommandListClose(backpressure)"))
         return 21;
       if (!check(queue->Wait(ready_fence.Get(),
                              static_cast<std::uint64_t>(frame) + 1ULL),
-                 "QueueWait(producer-ready)"))
+                 "QueueWait(backpressure-ready)"))
         return 22;
       ID3D12CommandList *exec[] = {l};
       queue->ExecuteCommandLists(1, exec);
       if (!check(queue->Signal(done_fence.Get(),
                                static_cast<std::uint64_t>(frame) + 1ULL),
-                 "QueueSignal(consumer-done)"))
+                 "QueueSignal(backpressure-done)"))
         return 23;
+    }
+  } else {
+    for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
+      if (g == 1) {
+        HANDLE transition_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!transition_event)
+          return 19;
+        if (done_fence->GetCompletedValue() < frame &&
+            (!check(done_fence->SetEventOnCompletion(frame, transition_event),
+                    "SetEventOnCompletion(generation0-done)") ||
+             WaitForSingleObject(transition_event, 30000) != WAIT_OBJECT_0)) {
+          CloseHandle(transition_event);
+          std::cerr << "generation transition wait failed\n";
+          return 19;
+        }
+        CloseHandle(transition_event);
+
+        res[0].Reset();
+        if (o.negative == L"client-termination") {
+          if (!TerminateProcess(pi.hProcess, expected)) {
+            std::cerr << "TerminateProcess(client) failed error="
+                      << GetLastError() << "\n";
+            return 19;
+          }
+          CloseHandle(control_write);
+          control_write = nullptr;
+          const DWORD code = wait_process(pi, 10000);
+          CloseHandle(pi.hThread);
+          CloseHandle(pi.hProcess);
+          if (code != expected) {
+            std::wcerr << L"negative_mode=" << o.negative << L" expected_exit="
+                       << expected << L" actual_exit=" << code
+                       << L"\nRESULT FAIL\n";
+            return 19;
+          }
+          std::wcout << L"negative_mode=" << o.negative << L" expected_exit="
+                     << expected << L" actual_exit=" << code
+                     << L" cleanup=completed\nRESULT PASS\n";
+          return 0;
+        }
+        if (o.negative == L"device-removal") {
+          ComPtr<ID3D12Device5> dev5;
+          if (!check(dev.As(&dev5), "ID3D12Device5"))
+            return 19;
+          dev5->RemoveDevice();
+          const HRESULT removed = dev->GetDeviceRemovedReason();
+          CloseHandle(control_write);
+          control_write = nullptr;
+          const DWORD code = wait_process(pi, 10000);
+          CloseHandle(pi.hThread);
+          CloseHandle(pi.hProcess);
+          if (SUCCEEDED(removed) || code != expected) {
+            std::cerr << "negative_mode=device-removal device_removed_hr=0x"
+                      << std::hex << static_cast<unsigned long>(removed)
+                      << std::dec << " expected_producer_exit=" << expected
+                      << " actual_producer_exit=" << code << "\nRESULT FAIL\n";
+            return 19;
+          }
+          std::cout << "negative_mode=device-removal device_removed_hr=0x"
+                    << std::hex << static_cast<unsigned long>(removed)
+                    << std::dec << " producer_exit=" << code
+                    << " cleanup=completed\nRESULT PASS\n";
+          return 0;
+        }
+        res[g] = texture(dev.Get(), specs[g].width, specs[g].height);
+        if (!res[g])
+          return 19;
+        if (!check(dev->CreateSharedHandle(res[g].Get(), nullptr, GENERIC_ALL,
+                                           nullptr, &rh[g]),
+                   "CreateSharedHandle(dynamic-resource)"))
+          return 19;
+        HANDLE remote_handle = nullptr;
+        if (!DuplicateHandle(GetCurrentProcess(), rh[g], pi.hProcess,
+                             &remote_handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+          std::cerr << "DuplicateHandle(dynamic-resource) failed error="
+                    << GetLastError() << "\n";
+          CloseHandle(rh[g]);
+          return 19;
+        }
+        CloseHandle(rh[g]);
+        rh[g] = nullptr;
+        ltr::bridge_probe::DynamicResourceMessage message{};
+        message.magic = ltr::bridge_probe::kControlMagic;
+        message.protocol = ltr::bridge_probe::kProtocolVersion;
+        message.generation = deferred_negative ? g + 1U : g;
+        message.width = specs[g].width;
+        message.height = specs[g].height;
+        message.resource_handle = static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(remote_handle));
+        DWORD bytes = 0;
+        if (!WriteFile(control_write, &message, sizeof(message), &bytes,
+                       nullptr) ||
+            bytes != sizeof(message)) {
+          std::cerr << "WriteFile(dynamic-resource) failed bytes=" << bytes
+                    << " error=" << GetLastError() << "\n";
+          CloseHandle(control_write);
+          control_write = nullptr;
+          return 19;
+        }
+        CloseHandle(control_write);
+        control_write = nullptr;
+        if (deferred_negative) {
+          const DWORD code = wait_process(pi, 10000);
+          CloseHandle(pi.hThread);
+          CloseHandle(pi.hProcess);
+          if (code != expected) {
+            std::wcerr << L"negative_mode=" << o.negative << L" expected_exit="
+                       << expected << L" actual_exit=" << code
+                       << L"\nRESULT FAIL\n";
+            return 19;
+          }
+          std::wcout << L"negative_mode=" << o.negative << L" expected_exit="
+                     << expected << L" actual_exit=" << code
+                     << L"\nRESULT PASS\n";
+          return 0;
+        }
+        create_uav(g);
+        std::cout << "dynamic_resource_sent generation=" << g
+                  << " size=" << specs[g].width << "x" << specs[g].height
+                  << " after_completed_frame=" << frame << "\n";
+      }
+      for (std::uint32_t local = 0;
+           local < ltr::bridge_probe::kFramesPerGeneration; ++local, ++frame) {
+        if (!check(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                               IID_PPV_ARGS(&alloc[frame])),
+                   "CreateCommandAllocator"))
+          return 19;
+        if (!check(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                          alloc[frame].Get(), pso.Get(),
+                                          IID_PPV_ARGS(&lists[frame])),
+                   "CreateCommandList"))
+          return 20;
+        auto *l = lists[frame].Get();
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = res[g].Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        l->ResourceBarrier(1, &b);
+        ID3D12DescriptorHeap *heaps[] = {dh.Get()};
+        l->SetDescriptorHeaps(1, heaps);
+        l->SetComputeRootSignature(root.Get());
+        l->SetPipelineState(pso.Get());
+        auto gh = dh->GetGPUDescriptorHandleForHeapStart();
+        gh.ptr += static_cast<UINT64>(g) * ds;
+        l->SetComputeRootDescriptorTable(0, gh);
+        l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frame * 2U);
+        l->Dispatch((specs[g].width + 7U) / 8U, (specs[g].height + 7U) / 8U, 1);
+        l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                    frame * 2U + 1U);
+        D3D12_RESOURCE_BARRIER ub{};
+        ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        ub.UAV.pResource = res[g].Get();
+        l->ResourceBarrier(1, &ub);
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        l->ResourceBarrier(1, &b);
+        if (!check(l->Close(), "CommandListClose"))
+          return 21;
+        if (!check(queue->Wait(ready_fence.Get(),
+                               static_cast<std::uint64_t>(frame) + 1ULL),
+                   "QueueWait(producer-ready)"))
+          return 22;
+        ID3D12CommandList *exec[] = {l};
+        queue->ExecuteCommandLists(1, exec);
+        if (!check(queue->Signal(done_fence.Get(),
+                                 static_cast<std::uint64_t>(frame) + 1ULL),
+                   "QueueSignal(consumer-done)"))
+          return 23;
+      }
     }
   }
   ComPtr<ID3D12CommandAllocator> ra;
@@ -593,6 +682,18 @@ int wmain(int argc, wchar_t **argv) {
   readback->Unmap(0, &wr);
   const double wall =
       std::chrono::duration<double, std::milli>(end - start).count();
+  if (o.backpressure_depth) {
+    std::cout << "consumer_bitness=64 mode=backpressure ring_depth="
+              << o.backpressure_depth
+              << " ownership=host_created_d3d12_resource "
+                 "transform=d3d12_compute_invert transport_gpu_copies=0\n"
+              << "frames=" << total << " host_delay_ms=50\n"
+              << std::fixed << std::setprecision(3)
+              << "host_gpu_compute_mean_us=" << (sum / total)
+              << " min_us=" << minv << " max_us=" << maxv
+              << " process_wall_ms=" << wall << "\nRESULT PASS\n";
+    return 0;
+  }
   std::cout << "consumer_bitness=64 ownership=host_created_d3d12_resource "
                "transform=d3d12_compute_invert transport_gpu_copies=0\n"
             << "protocol_version=" << ltr::bridge_probe::kProtocolVersion

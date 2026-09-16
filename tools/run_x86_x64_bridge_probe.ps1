@@ -77,3 +77,11 @@ if ($hostTerminationText -notmatch "reject=host_terminated detected_by=process_h
     $hostTerminationText -notmatch "RESULT PASS") {
     throw "host-termination producer did not report clean host-loss detection"
 }
+
+foreach ($depth in @(1, 2)) {
+    Write-Host "=== backpressure probe: ring depth $depth ==="
+    Invoke-Checked $consumer @(
+        "--producer", $producer,
+        "--backpressure-depth", [string]$depth
+    )
+}

@@ -23,6 +23,7 @@ namespace {
 }
 struct Arguments {
   HANDLE resource0_handle{};
+  HANDLE resource1_handle{};
   HANDLE done_fence_handle{};
   HANDLE control_read_handle{};
   HANDLE host_process_handle{};
@@ -33,6 +34,7 @@ struct Arguments {
   std::uint32_t frames = 0;
   std::uint32_t expect_host_stall = 0;
   std::uint32_t expect_host_termination = 0;
+  std::uint32_t backpressure_depth = 0;
 };
 [[nodiscard]] bool u32(const std::wstring &s, std::uint32_t &out) {
   try {
@@ -52,6 +54,9 @@ struct Arguments {
     const std::wstring v(argv[i + 1]);
     if (k == L"--resource0-handle")
       a.resource0_handle =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--resource1-handle")
+      a.resource1_handle =
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
     else if (k == L"--width0") {
       if (!u32(v, a.spec0.width))
@@ -88,12 +93,18 @@ struct Arguments {
     } else if (k == L"--expect-host-termination") {
       if (!u32(v, a.expect_host_termination) || a.expect_host_termination > 1U)
         return false;
+    } else if (k == L"--backpressure-depth") {
+      if (!u32(v, a.backpressure_depth) || a.backpressure_depth > 2U)
+        return false;
     } else
       return false;
   }
-  return a.resource0_handle && a.done_fence_handle && a.control_read_handle &&
-         a.host_process_handle && a.spec0.width && a.spec0.height &&
-         !a.ready_fence_name.empty() && low && high && a.frames;
+  const bool backpressure_resources =
+      a.backpressure_depth != 2U || a.resource1_handle;
+  return a.resource0_handle && backpressure_resources && a.done_fence_handle &&
+         a.control_read_handle && a.host_process_handle && a.spec0.width &&
+         a.spec0.height && !a.ready_fence_name.empty() && low && high &&
+         a.frames;
 }
 [[nodiscard]] bool contract(ID3D11Texture2D *tex,
                             const ltr::bridge_probe::GenerationSpec &e,
@@ -173,6 +184,20 @@ int wmain(int argc, wchar_t **argv) {
   if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[0]),
              "CreateTexture2D(staging0)"))
     return 10;
+  if (a.backpressure_depth == 2U) {
+    specs[1] = a.spec0;
+    if (!check(dev1->OpenSharedResource1(a.resource1_handle,
+                                         IID_PPV_ARGS(&shared[1])),
+               "OpenSharedResource1(backpressure-slot1)"))
+      return 8;
+    CloseHandle(a.resource1_handle);
+    a.resource1_handle = nullptr;
+    if (!contract(shared[1].Get(), specs[1], 1))
+      return 9;
+    if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[1]),
+               "CreateTexture2D(backpressure-staging1)"))
+      return 10;
+  }
   ComPtr<ID3D11Fence> ready_fence, done_fence;
   if (!check(dev5->CreateFence(
                  0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
@@ -263,6 +288,106 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr << "host-stall probe unexpectedly completed wait=" << wait
               << "\n";
     return 18;
+  }
+  if (a.backpressure_depth) {
+    CloseHandle(a.control_read_handle);
+    a.control_read_handle = nullptr;
+    const std::uint32_t depth = a.backpressure_depth;
+    const std::uint32_t total = a.frames * ltr::bridge_probe::kGenerationCount;
+    const auto spec = a.spec0;
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(spec.width) *
+                                     spec.height * 4U);
+    std::uint64_t mismatches = 0;
+    std::uint32_t submitted = 0, completed = 0, max_in_flight = 0;
+    std::uint32_t pending_reuse_waits = 0;
+    double wait_sum_ms = 0.0;
+
+    const auto validate = [&](std::uint32_t frame_to_validate,
+                              std::uint32_t slot, bool reuse) -> bool {
+      const std::uint64_t target =
+          static_cast<std::uint64_t>(frame_to_validate) + 1ULL;
+      if (reuse && done_fence->GetCompletedValue() < target)
+        ++pending_reuse_waits;
+      const auto wait_start = std::chrono::steady_clock::now();
+      if (!check(ctx4->Wait(done_fence.Get(), target),
+                 "Wait(backpressure-done)"))
+        return false;
+      ctx->CopyResource(staging[slot].Get(), shared[slot].Get());
+      D3D11_MAPPED_SUBRESOURCE mapped{};
+      if (!check(ctx->Map(staging[slot].Get(), 0, D3D11_MAP_READ, 0, &mapped),
+                 "Map(backpressure-staging)"))
+        return false;
+      wait_sum_ms += std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - wait_start)
+                         .count();
+      for (std::uint32_t y = 0; y < spec.height; ++y) {
+        const auto *row = static_cast<const std::uint8_t *>(mapped.pData) +
+                          static_cast<std::size_t>(y) * mapped.RowPitch;
+        for (std::uint32_t x = 0; x < spec.width; ++x) {
+          const auto *q = row + static_cast<std::size_t>(x) * 4U;
+          const auto er = static_cast<std::uint8_t>(
+                         255U -
+                         ltr::bridge_probe::source_r(x, y, frame_to_validate)),
+                     eg = static_cast<std::uint8_t>(
+                         255U -
+                         ltr::bridge_probe::source_g(x, y, frame_to_validate)),
+                     eb = static_cast<std::uint8_t>(
+                         255U -
+                         ltr::bridge_probe::source_b(x, y, frame_to_validate));
+          if (q[0] != er || q[1] != eg || q[2] != eb || q[3] != 255U)
+            ++mismatches;
+        }
+      }
+      ctx->Unmap(staging[slot].Get(), 0);
+      ++completed;
+      return true;
+    };
+
+    for (std::uint32_t frame = 0; frame < total; ++frame) {
+      const std::uint32_t slot = frame % depth;
+      if (frame >= depth && !validate(frame - depth, slot, true)) {
+        CloseHandle(fh);
+        return 20;
+      }
+      for (std::uint32_t y = 0; y < spec.height; ++y)
+        for (std::uint32_t x = 0; x < spec.width; ++x) {
+          const std::size_t i =
+              (static_cast<std::size_t>(y) * spec.width + x) * 4U;
+          pixels[i] = ltr::bridge_probe::source_r(x, y, frame);
+          pixels[i + 1] = ltr::bridge_probe::source_g(x, y, frame);
+          pixels[i + 2] = ltr::bridge_probe::source_b(x, y, frame);
+          pixels[i + 3] = 255U;
+        }
+      ctx->UpdateSubresource(shared[slot].Get(), 0, nullptr, pixels.data(),
+                             spec.width * 4U, 0);
+      if (!check(ctx4->Signal(ready_fence.Get(),
+                              static_cast<std::uint64_t>(frame) + 1ULL),
+                 "Signal(backpressure-ready)")) {
+        CloseHandle(fh);
+        return 20;
+      }
+      ctx->Flush();
+      ++submitted;
+      max_in_flight = std::max(max_in_flight, submitted - completed);
+    }
+    for (std::uint32_t frame = total - depth; frame < total; ++frame) {
+      if (!validate(frame, frame % depth, false)) {
+        CloseHandle(fh);
+        return 20;
+      }
+    }
+    CloseHandle(fh);
+    const bool passed = mismatches == 0 && max_in_flight == depth &&
+                        pending_reuse_waits > 0 && completed == total;
+    std::cout << "producer_bitness=32 mode=backpressure ring_depth=" << depth
+              << " frames=" << total << " max_in_flight=" << max_in_flight
+              << " pending_reuse_waits=" << pending_reuse_waits
+              << " mismatches=" << mismatches << "\n"
+              << std::fixed << std::setprecision(4)
+              << "validation_wait_readback_mean_ms="
+              << (wait_sum_ms / static_cast<double>(total)) << "\n"
+              << (passed ? "RESULT PASS\n" : "RESULT FAIL\n");
+    return passed ? 0 : 24;
   }
   std::uint64_t mismatches = 0;
   double sum = 0.0, minv = std::numeric_limits<double>::max(), maxv = 0.0;
