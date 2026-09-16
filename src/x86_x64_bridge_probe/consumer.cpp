@@ -28,6 +28,8 @@ namespace {
 struct Options {
   std::wstring producer, negative;
   std::uint32_t backpressure_depth = 0;
+  bool stereo = false;
+  bool stereo_contamination = false;
 };
 [[nodiscard]] bool parse(int argc, wchar_t **argv, Options &o) {
   for (int i = 1; i < argc; ++i) {
@@ -45,11 +47,17 @@ struct Options {
       } catch (...) {
         return false;
       }
+    } else if (k == L"--stereo") {
+      o.stereo = true;
+    } else if (k == L"--stereo-contamination") {
+      o.stereo = true;
+      o.stereo_contamination = true;
     } else
       return false;
   }
   return !o.producer.empty() &&
-         (o.negative.empty() || o.backpressure_depth == 0U);
+         (o.negative.empty() || o.backpressure_depth == 0U) &&
+         (!o.stereo || (o.negative.empty() && o.backpressure_depth == 0U));
 }
 [[nodiscard]] ComPtr<ID3D12Resource> texture(ID3D12Device *d, std::uint32_t w,
                                              std::uint32_t h) {
@@ -92,7 +100,7 @@ int wmain(int argc, wchar_t **argv) {
         << "usage: consumer --producer <x86-producer> [--negative "
            "protocol|adapter|resource-contract|host-stall|dynamic-control|"
            "client-termination|device-removal|host-termination]"
-           " [--backpressure-depth 1|2]\n";
+           " [--backpressure-depth 1|2] [--stereo|--stereo-contamination]\n";
     return 2;
   }
   ComPtr<ID3D12Device> dev;
@@ -120,14 +128,14 @@ int wmain(int argc, wchar_t **argv) {
                                      &rh[0]),
              "CreateSharedHandle(resource0)"))
     return 6;
-  if (o.backpressure_depth == 2U) {
+  if (o.backpressure_depth == 2U || o.stereo) {
     res[1] = texture(dev.Get(), ltr::bridge_probe::kGenerations[0].width,
                      ltr::bridge_probe::kGenerations[0].height);
     if (!res[1])
       return 5;
     if (!check(dev->CreateSharedHandle(res[1].Get(), &sa, GENERIC_ALL, nullptr,
                                        &rh[1]),
-               "CreateSharedHandle(backpressure-resource1)"))
+               "CreateSharedHandle(resource1)"))
       return 6;
   }
   HANDLE control_read = nullptr, control_write = nullptr;
@@ -162,6 +170,19 @@ int wmain(int argc, wchar_t **argv) {
                                      nullptr, &done_fence_handle),
              "CreateSharedHandle(done-fence)"))
     return 6;
+  ComPtr<ID3D12Fence> stereo_done_fence;
+  HANDLE stereo_done_fence_handle = nullptr;
+  if (o.stereo) {
+    if (!check(dev->CreateFence(0, D3D12_FENCE_FLAG_SHARED,
+                                IID_PPV_ARGS(&stereo_done_fence)),
+               "CreateFence(stereo-done1)"))
+      return 6;
+    if (!check(dev->CreateSharedHandle(stereo_done_fence.Get(), &sa,
+                                       GENERIC_ALL, nullptr,
+                                       &stereo_done_fence_handle),
+               "CreateSharedHandle(stereo-done1)"))
+      return 6;
+  }
   std::uint32_t protocol = ltr::bridge_probe::kProtocolVersion;
   auto specs = std::vector<ltr::bridge_probe::GenerationSpec>(
       std::begin(ltr::bridge_probe::kGenerations),
@@ -199,17 +220,21 @@ int wmain(int argc, wchar_t **argv) {
   }
   const std::wstring ready_fence_name =
       L"Local\\LTRBridgeReadyFence_" + std::to_wstring(GetCurrentProcessId());
+  const std::wstring stereo_ready_fence_name = ready_fence_name + L"_Right";
   std::wostringstream cmd;
   cmd << quote(o.producer) << L" --resource0-handle "
       << static_cast<unsigned long long>(
              reinterpret_cast<std::uintptr_t>(rh[0]));
-  if (o.backpressure_depth == 2U)
+  if (o.backpressure_depth == 2U || o.stereo)
     cmd << L" --resource1-handle "
         << static_cast<unsigned long long>(
                reinterpret_cast<std::uintptr_t>(rh[1]));
   cmd << L" --done-fence-handle "
       << static_cast<unsigned long long>(
              reinterpret_cast<std::uintptr_t>(done_fence_handle))
+      << L" --done-fence1-handle "
+      << static_cast<unsigned long long>(
+             reinterpret_cast<std::uintptr_t>(stereo_done_fence_handle))
       << L" --control-read-handle "
       << static_cast<unsigned long long>(
              reinterpret_cast<std::uintptr_t>(control_read))
@@ -217,13 +242,14 @@ int wmain(int argc, wchar_t **argv) {
       << static_cast<unsigned long long>(
              reinterpret_cast<std::uintptr_t>(host_process_handle))
       << L" --width0 " << specs[0].width << L" --height0 " << specs[0].height
-      << L" --ready-fence-name " << quote(ready_fence_name) << L" --luid-low "
-      << luid.LowPart << L" --luid-high " << luid.HighPart
+      << L" --ready-fence-name " << quote(ready_fence_name)
+      << L" --ready-fence1-name " << quote(stereo_ready_fence_name)
+      << L" --luid-low " << luid.LowPart << L" --luid-high " << luid.HighPart
       << L" --protocol-version " << protocol << L" --frames-per-generation "
       << ltr::bridge_probe::kFramesPerGeneration << L" --expect-host-stall "
       << expect_host_stall << L" --expect-host-termination "
       << expect_host_termination << L" --backpressure-depth "
-      << o.backpressure_depth;
+      << o.backpressure_depth << L" --stereo-mode " << (o.stereo ? 1U : 0U);
   std::wstring line = cmd.str();
   STARTUPINFOW si{};
   si.cb = sizeof(si);
@@ -249,6 +275,10 @@ int wmain(int argc, wchar_t **argv) {
   }
   CloseHandle(done_fence_handle);
   done_fence_handle = nullptr;
+  if (stereo_done_fence_handle) {
+    CloseHandle(stereo_done_fence_handle);
+    stereo_done_fence_handle = nullptr;
+  }
   if (expected && !deferred_negative) {
     CloseHandle(control_write);
     const DWORD code = wait_process(pi, 10000);
@@ -281,6 +311,27 @@ int wmain(int argc, wchar_t **argv) {
     return 11;
   }
   CloseHandle(fh);
+  ComPtr<ID3D12Fence> stereo_ready_fence;
+  if (o.stereo) {
+    HANDLE stereo_fh = nullptr;
+    HRESULT stereo_open = E_FAIL;
+    for (int n = 0; n < 5000; ++n) {
+      stereo_open = dev->OpenSharedHandleByName(stereo_ready_fence_name.c_str(),
+                                                GENERIC_ALL, &stereo_fh);
+      if (SUCCEEDED(stereo_open))
+        break;
+      Sleep(1);
+    }
+    if (!check(stereo_open, "OpenSharedHandleByName(stereo-ready1)"))
+      return 10;
+    if (!check(
+            dev->OpenSharedHandle(stereo_fh, IID_PPV_ARGS(&stereo_ready_fence)),
+            "OpenSharedHandle(stereo-ready1)")) {
+      CloseHandle(stereo_fh);
+      return 11;
+    }
+    CloseHandle(stereo_fh);
+  }
   if (o.negative == L"host-termination") {
     HANDLE ready_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!ready_event)
@@ -302,12 +353,14 @@ int wmain(int argc, wchar_t **argv) {
     TerminateProcess(GetCurrentProcess(), 24);
     return 24;
   }
-  if (o.backpressure_depth) {
+  if (o.backpressure_depth || o.stereo) {
     CloseHandle(control_write);
     control_write = nullptr;
   }
   const char *shader_src =
-      R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,v.a);})";
+      o.stereo_contamination
+          ? R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,211.0/255.0);})"
+          : R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,v.a);})";
   ComPtr<ID3DBlob> shader, errors;
   if (!check(D3DCompile(shader_src, std::char_traits<char>::length(shader_src),
                         "bridge", nullptr, nullptr, "main", "cs_5_0",
@@ -364,7 +417,7 @@ int wmain(int argc, wchar_t **argv) {
     dev->CreateUnorderedAccessView(res[g].Get(), nullptr, &u, h);
   };
   create_uav(0);
-  if (o.backpressure_depth == 2U)
+  if (o.backpressure_depth == 2U || o.stereo)
     create_uav(1);
   const std::uint32_t total = ltr::bridge_probe::kFramesPerGeneration *
                               ltr::bridge_probe::kGenerationCount;
@@ -394,7 +447,65 @@ int wmain(int argc, wchar_t **argv) {
   std::vector<ComPtr<ID3D12CommandAllocator>> alloc(total);
   std::vector<ComPtr<ID3D12GraphicsCommandList>> lists(total);
   std::uint32_t frame = 0;
-  if (o.backpressure_depth) {
+  if (o.stereo) {
+    for (std::uint32_t temporal = 0;
+         temporal < ltr::bridge_probe::kFramesPerGeneration; ++temporal) {
+      for (std::uint32_t eye = 0; eye < 2U; ++eye, ++frame) {
+        if (!check(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                               IID_PPV_ARGS(&alloc[frame])),
+                   "CreateCommandAllocator(stereo)"))
+          return 19;
+        if (!check(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                          alloc[frame].Get(), pso.Get(),
+                                          IID_PPV_ARGS(&lists[frame])),
+                   "CreateCommandList(stereo)"))
+          return 20;
+        auto *l = lists[frame].Get();
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = res[eye].Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        l->ResourceBarrier(1, &b);
+        ID3D12DescriptorHeap *heaps[] = {dh.Get()};
+        l->SetDescriptorHeaps(1, heaps);
+        l->SetComputeRootSignature(root.Get());
+        l->SetPipelineState(pso.Get());
+        auto gh = dh->GetGPUDescriptorHandleForHeapStart();
+        gh.ptr += static_cast<UINT64>(eye) * ds;
+        l->SetComputeRootDescriptorTable(0, gh);
+        l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frame * 2U);
+        l->Dispatch((specs[0].width + 7U) / 8U, (specs[0].height + 7U) / 8U, 1);
+        l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                    frame * 2U + 1U);
+        D3D12_RESOURCE_BARRIER ub{};
+        ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        ub.UAV.pResource = res[eye].Get();
+        l->ResourceBarrier(1, &ub);
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        l->ResourceBarrier(1, &b);
+        if (!check(l->Close(), "CommandListClose(stereo)"))
+          return 21;
+        ID3D12Fence *ready =
+            eye == 0 ? ready_fence.Get() : stereo_ready_fence.Get();
+        ID3D12Fence *done =
+            eye == 0 ? done_fence.Get() : stereo_done_fence.Get();
+        const std::uint64_t fence_value =
+            static_cast<std::uint64_t>(temporal) + 1ULL;
+        if (!check(queue->Wait(ready, fence_value),
+                   eye == 0 ? "QueueWait(stereo-left-ready)"
+                            : "QueueWait(stereo-right-ready)"))
+          return 22;
+        ID3D12CommandList *exec[] = {l};
+        queue->ExecuteCommandLists(1, exec);
+        if (!check(queue->Signal(done, fence_value),
+                   eye == 0 ? "QueueSignal(stereo-left-done)"
+                            : "QueueSignal(stereo-right-done)"))
+          return 23;
+      }
+    }
+  } else if (o.backpressure_depth) {
     Sleep(50);
     for (; frame < total; ++frame) {
       const std::uint32_t slot = frame % o.backpressure_depth;
@@ -658,6 +769,18 @@ int wmain(int argc, wchar_t **argv) {
   const auto end = std::chrono::steady_clock::now();
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  if (o.stereo_contamination) {
+    if (producer_exit != 25) {
+      std::cerr
+          << "negative_mode=stereo-contamination expected_exit=25 actual_exit="
+          << producer_exit << "\nRESULT FAIL\n";
+      return 31;
+    }
+    std::cout
+        << "negative_mode=stereo-contamination expected_exit=25 actual_exit="
+        << producer_exit << " detector=cross_eye_marker\nRESULT PASS\n";
+    return 0;
+  }
   if (producer_exit != 0) {
     std::cerr << "producer failed exit=" << producer_exit << "\n";
     return 31;
@@ -688,6 +811,19 @@ int wmain(int argc, wchar_t **argv) {
               << " ownership=host_created_d3d12_resource "
                  "transform=d3d12_compute_invert transport_gpu_copies=0\n"
               << "frames=" << total << " host_delay_ms=50\n"
+              << std::fixed << std::setprecision(3)
+              << "host_gpu_compute_mean_us=" << (sum / total)
+              << " min_us=" << minv << " max_us=" << maxv
+              << " process_wall_ms=" << wall << "\nRESULT PASS\n";
+    return 0;
+  }
+  if (o.stereo) {
+    std::cout << "consumer_bitness=64 mode=stereo eyes=2 temporal_frames="
+              << ltr::bridge_probe::kFramesPerGeneration
+              << " view_dispatches=" << total
+              << " ownership=host_created_d3d12_resource "
+                 "synchronization=independent_per_eye_fences "
+                 "transform=d3d12_compute_invert transport_gpu_copies=0\n"
               << std::fixed << std::setprecision(3)
               << "host_gpu_compute_mean_us=" << (sum / total)
               << " min_us=" << minv << " max_us=" << maxv

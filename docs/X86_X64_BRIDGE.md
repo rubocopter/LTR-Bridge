@@ -1,6 +1,6 @@
 # x86 -> x64 bridge research
 
-Status: **local D3D11 x86 -> D3D12 x64 multiframe prototype implemented and host-tested; repeated frames, true mid-run resource replacement, controlled process/device loss, bounded ring-depth backpressure, timestamp/copy accounting and negative-path diagnostics are covered; broader failure timing and stereo remain pending**.
+Status: **local D3D11 x86 -> D3D12 x64 multiframe prototype implemented and host-tested; repeated frames, true mid-run resource replacement, controlled process/device loss, bounded ring-depth backpressure, two-eye isolation, timestamp/copy accounting and negative-path diagnostics are covered; broader failure timing and OpenXR/headset execution remain pending**.
 
 ## Why a bridge is needed
 
@@ -197,8 +197,20 @@ The multiframe probe also records copy scope explicitly: the x64 D3D12 transform
 
 **Host-tested:** five additional runs at each depth all completed with `0` mismatches and the expected bound: `max_in_flight=1` for depth 1 and `max_in_flight=2` for depth 2. Depth 1 recorded all `23/23` possible reuse checks as pending in every run. Depth 2 recorded `16–21` pending reuse waits out of `22`, averaging `18.2`. The per-run mean x86 wait+validation-readback interval averaged `4.1463 ms` at depth 1 (`4.0331–4.2882 ms`) and `3.8202 ms` at depth 2 (`3.5088–4.5201 ms`). Per-run mean D3D12 compute intervals averaged `4.2324 us` (`4.053–4.352 us`) and `3.9938 us` (`3.200–4.907 us`) respectively. These short synthetic single-host values demonstrate bounded reuse and pressure handling; they are not `performance-validated` and do not establish that depth 2 is universally faster.
 
+### Controlled stereo transport probe
+
+**Implemented/host-tested:** a separate stereo mode creates two host-owned `64x64 R8G8B8A8_UNORM` resources before launch, one per eye. The x86 side opens both resources and creates two independent D3D11 `ready` fences; the x64 side supplies two independent D3D12 `done` fences. Each eye therefore has its own resource and synchronization timeline. The probe runs `12` temporal frames per eye (`24` view dispatches) and keeps CPU readback validation-only.
+
+Each eye receives a distinct deterministic RGB sequence and a persistent alpha identity marker (`0x4c` left, `0xd3` right). Validation checks the expected transformed RGB and the eye marker for every pixel. `cross_eye_contamination` is incremented whenever an eye receives the other eye's marker, so eye identity is checked independently of RGB correctness.
+
+**Host-tested:** the full driver passed, then five additional stereo runs completed with `0` mismatches and `0` cross-eye contamination. Across those five runs, per-run mean D3D12 compute intervals averaged `4.207 us` (`4.139–4.267 us`) and per-run mean x86 wait+validation-readback intervals averaged `2.2509 ms` (`2.0720–2.4701 ms`). These are short single-host synthetic measurements and are not `performance-validated` VR throughput evidence.
+
+**Host-tested negative path:** a synthetic contamination mode deliberately forces the right-eye alpha marker into the transformed left-eye stream. The detector reported exactly `49,152` contaminated pixels (`64 * 64 * 12`) and the producer rejected the run. This validates the contamination check itself; it does not emulate every real cross-eye resource/history bug.
+
+This probe establishes two-eye transport isolation only. The current x86 validation loop submits and validates the two eyes serially, so it does not measure useful stereo overlap or headset frame pacing. It also does not yet provide per-eye temporal reconstruction histories, OpenXR swapchains/presentation, pose/FOV timing, frame interpolation or physical-headset validation.
+
 **Verified for this probe:** the x64 host can create a D3D12 committed resource with `D3D12_HEAP_FLAG_SHARED`, `ALLOW_RENDER_TARGET`, `ALLOW_UNORDERED_ACCESS`, and `ALLOW_SIMULTANEOUS_ACCESS`; the x86 D3D11 device on the same adapter can open that NT handle with `OpenSharedResource1`. Shared fences can cross the D3D11/D3D12 boundary, but the multiframe evidence requires the unidirectional ownership/signaling split described above.
 
 **Observed during development:** two alternative paths failed on this host and should not be generalized from this single experiment. A D3D11-created shared texture was openable from D3D12, but the attempted D3D12 write path did not become visible to the D3D11 validation readback. A D3D12-created shared fence was openable from D3D11, but `ID3D11DeviceContext4::Signal` returned `E_INVALIDARG`. The passing probe therefore uses D3D12 ownership for the texture and D3D11 ownership for the fence. These failures are implementation evidence for ownership-direction testing, not proof that the opposite directions are universally unsupported.
 
-The deterministic multiframe transport, one real mid-run resource replacement, first timing/copy accounting, dynamic-control rejection, abrupt client termination, abrupt host-loss detection, controlled D3D12 device removal and bounded ring-depth backpressure are now covered. Mid-dispatch failure timing, unsupported-format coverage beyond contract rejection, renderer-to-shared-resource copy cost and stereo remain experiment-pending.
+The deterministic multiframe transport, one real mid-run resource replacement, first timing/copy accounting, dynamic-control rejection, abrupt client termination, abrupt host-loss detection, controlled D3D12 device removal, bounded ring-depth backpressure and controlled two-eye transport isolation are now covered. Mid-dispatch failure timing, unsupported-format coverage beyond contract rejection, renderer-to-shared-resource copy cost, per-eye reconstruction histories, OpenXR presentation and headset execution remain experiment-pending.

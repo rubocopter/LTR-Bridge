@@ -85,3 +85,9 @@ foreach ($depth in @(1, 2)) {
         "--backpressure-depth", [string]$depth
     )
 }
+
+Write-Host "=== stereo transport probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--stereo")
+
+Write-Host "=== negative probe: stereo contamination marker ==="
+Invoke-Checked $consumer @("--producer", $producer, "--stereo-contamination")

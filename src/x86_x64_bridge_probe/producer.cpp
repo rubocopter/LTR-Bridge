@@ -25,16 +25,19 @@ struct Arguments {
   HANDLE resource0_handle{};
   HANDLE resource1_handle{};
   HANDLE done_fence_handle{};
+  HANDLE done_fence1_handle{};
   HANDLE control_read_handle{};
   HANDLE host_process_handle{};
   ltr::bridge_probe::GenerationSpec spec0{};
   std::wstring ready_fence_name;
+  std::wstring ready_fence1_name;
   LUID luid{};
   std::uint32_t protocol = 0;
   std::uint32_t frames = 0;
   std::uint32_t expect_host_stall = 0;
   std::uint32_t expect_host_termination = 0;
   std::uint32_t backpressure_depth = 0;
+  std::uint32_t stereo_mode = 0;
 };
 [[nodiscard]] bool u32(const std::wstring &s, std::uint32_t &out) {
   try {
@@ -67,6 +70,9 @@ struct Arguments {
     } else if (k == L"--done-fence-handle")
       a.done_fence_handle =
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--done-fence1-handle")
+      a.done_fence1_handle =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
     else if (k == L"--control-read-handle")
       a.control_read_handle =
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
@@ -75,6 +81,8 @@ struct Arguments {
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
     else if (k == L"--ready-fence-name")
       a.ready_fence_name = v;
+    else if (k == L"--ready-fence1-name")
+      a.ready_fence1_name = v;
     else if (k == L"--luid-low") {
       a.luid.LowPart = static_cast<DWORD>(std::stoul(v));
       low = true;
@@ -96,15 +104,20 @@ struct Arguments {
     } else if (k == L"--backpressure-depth") {
       if (!u32(v, a.backpressure_depth) || a.backpressure_depth > 2U)
         return false;
+    } else if (k == L"--stereo-mode") {
+      if (!u32(v, a.stereo_mode) || a.stereo_mode > 1U)
+        return false;
     } else
       return false;
   }
-  const bool backpressure_resources =
-      a.backpressure_depth != 2U || a.resource1_handle;
-  return a.resource0_handle && backpressure_resources && a.done_fence_handle &&
-         a.control_read_handle && a.host_process_handle && a.spec0.width &&
-         a.spec0.height && !a.ready_fence_name.empty() && low && high &&
-         a.frames;
+  const bool second_resource =
+      (a.backpressure_depth != 2U && !a.stereo_mode) || a.resource1_handle;
+  const bool stereo_contract =
+      !a.stereo_mode || (a.done_fence1_handle && !a.ready_fence1_name.empty());
+  return a.resource0_handle && second_resource && stereo_contract &&
+         a.done_fence_handle && a.control_read_handle &&
+         a.host_process_handle && a.spec0.width && a.spec0.height &&
+         !a.ready_fence_name.empty() && low && high && a.frames;
 }
 [[nodiscard]] bool contract(ID3D11Texture2D *tex,
                             const ltr::bridge_probe::GenerationSpec &e,
@@ -184,21 +197,23 @@ int wmain(int argc, wchar_t **argv) {
   if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[0]),
              "CreateTexture2D(staging0)"))
     return 10;
-  if (a.backpressure_depth == 2U) {
+  if (a.backpressure_depth == 2U || a.stereo_mode) {
     specs[1] = a.spec0;
     if (!check(dev1->OpenSharedResource1(a.resource1_handle,
                                          IID_PPV_ARGS(&shared[1])),
-               "OpenSharedResource1(backpressure-slot1)"))
+               a.stereo_mode ? "OpenSharedResource1(stereo-right)"
+                             : "OpenSharedResource1(backpressure-slot1)"))
       return 8;
     CloseHandle(a.resource1_handle);
     a.resource1_handle = nullptr;
     if (!contract(shared[1].Get(), specs[1], 1))
       return 9;
     if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[1]),
-               "CreateTexture2D(backpressure-staging1)"))
+               a.stereo_mode ? "CreateTexture2D(stereo-staging-right)"
+                             : "CreateTexture2D(backpressure-staging1)"))
       return 10;
   }
-  ComPtr<ID3D11Fence> ready_fence, done_fence;
+  ComPtr<ID3D11Fence> ready_fence, done_fence, ready_fence1, done_fence1;
   if (!check(dev5->CreateFence(
                  0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
                  reinterpret_cast<void **>(ready_fence.GetAddressOf())),
@@ -218,6 +233,32 @@ int wmain(int argc, wchar_t **argv) {
   }
   CloseHandle(a.done_fence_handle);
   a.done_fence_handle = nullptr;
+  HANDLE fh1 = nullptr;
+  if (a.stereo_mode) {
+    if (!check(dev5->CreateFence(
+                   0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
+                   reinterpret_cast<void **>(ready_fence1.GetAddressOf())),
+               "CreateFence(stereo-ready1)")) {
+      CloseHandle(fh);
+      return 11;
+    }
+    if (!check(ready_fence1->CreateSharedHandle(
+                   nullptr, GENERIC_ALL, a.ready_fence1_name.c_str(), &fh1),
+               "CreateSharedHandle(stereo-ready1)")) {
+      CloseHandle(fh);
+      return 12;
+    }
+    if (!check(dev5->OpenSharedFence(
+                   a.done_fence1_handle, __uuidof(ID3D11Fence),
+                   reinterpret_cast<void **>(done_fence1.GetAddressOf())),
+               "OpenSharedFence(stereo-done1)")) {
+      CloseHandle(fh1);
+      CloseHandle(fh);
+      return 12;
+    }
+    CloseHandle(a.done_fence1_handle);
+    a.done_fence1_handle = nullptr;
+  }
   if (a.expect_host_termination) {
     if (!check(ctx4->Signal(ready_fence.Get(), 1),
                "Signal(host-termination-ready)")) {
@@ -288,6 +329,98 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr << "host-stall probe unexpectedly completed wait=" << wait
               << "\n";
     return 18;
+  }
+  if (a.stereo_mode) {
+    CloseHandle(a.control_read_handle);
+    a.control_read_handle = nullptr;
+    const auto spec = a.spec0;
+    const std::uint8_t eye_marker[2] = {0x4CU, 0xD3U};
+    std::uint64_t mismatches = 0, cross_eye_contamination = 0;
+    double wait_sum_ms = 0.0;
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(spec.width) *
+                                     spec.height * 4U);
+    for (std::uint32_t temporal = 0; temporal < a.frames; ++temporal) {
+      for (std::uint32_t eye = 0; eye < 2U; ++eye) {
+        const std::uint32_t seed_frame = temporal + eye * 997U;
+        for (std::uint32_t y = 0; y < spec.height; ++y)
+          for (std::uint32_t x = 0; x < spec.width; ++x) {
+            const std::size_t i =
+                (static_cast<std::size_t>(y) * spec.width + x) * 4U;
+            pixels[i] = ltr::bridge_probe::source_r(x, y, seed_frame);
+            pixels[i + 1] = ltr::bridge_probe::source_g(x, y, seed_frame);
+            pixels[i + 2] = ltr::bridge_probe::source_b(x, y, seed_frame);
+            pixels[i + 3] = eye_marker[eye];
+          }
+        ctx->UpdateSubresource(shared[eye].Get(), 0, nullptr, pixels.data(),
+                               spec.width * 4U, 0);
+        ID3D11Fence *ready = eye == 0 ? ready_fence.Get() : ready_fence1.Get();
+        ID3D11Fence *done = eye == 0 ? done_fence.Get() : done_fence1.Get();
+        const std::uint64_t fence_value =
+            static_cast<std::uint64_t>(temporal) + 1ULL;
+        if (!check(ctx4->Signal(ready, fence_value),
+                   eye == 0 ? "Signal(stereo-left-ready)"
+                            : "Signal(stereo-right-ready)")) {
+          CloseHandle(fh1);
+          CloseHandle(fh);
+          return 20;
+        }
+        ctx->Flush();
+        const auto wait_start = std::chrono::steady_clock::now();
+        if (!check(ctx4->Wait(done, fence_value),
+                   eye == 0 ? "Wait(stereo-left-done)"
+                            : "Wait(stereo-right-done)")) {
+          CloseHandle(fh1);
+          CloseHandle(fh);
+          return 20;
+        }
+        ctx->CopyResource(staging[eye].Get(), shared[eye].Get());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (!check(ctx->Map(staging[eye].Get(), 0, D3D11_MAP_READ, 0, &mapped),
+                   eye == 0 ? "Map(stereo-left)" : "Map(stereo-right)")) {
+          CloseHandle(fh1);
+          CloseHandle(fh);
+          return 20;
+        }
+        wait_sum_ms += std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - wait_start)
+                           .count();
+        for (std::uint32_t y = 0; y < spec.height; ++y) {
+          const auto *row = static_cast<const std::uint8_t *>(mapped.pData) +
+                            static_cast<std::size_t>(y) * mapped.RowPitch;
+          for (std::uint32_t x = 0; x < spec.width; ++x) {
+            const auto *q = row + static_cast<std::size_t>(x) * 4U;
+            const auto er = static_cast<std::uint8_t>(
+                           255U -
+                           ltr::bridge_probe::source_r(x, y, seed_frame)),
+                       eg = static_cast<std::uint8_t>(
+                           255U -
+                           ltr::bridge_probe::source_g(x, y, seed_frame)),
+                       eb = static_cast<std::uint8_t>(
+                           255U -
+                           ltr::bridge_probe::source_b(x, y, seed_frame));
+            if (q[3] == eye_marker[1U - eye])
+              ++cross_eye_contamination;
+            if (q[0] != er || q[1] != eg || q[2] != eb ||
+                q[3] != eye_marker[eye])
+              ++mismatches;
+          }
+        }
+        ctx->Unmap(staging[eye].Get(), 0);
+      }
+    }
+    CloseHandle(fh1);
+    CloseHandle(fh);
+    const std::uint32_t view_frames = a.frames * 2U;
+    const bool passed = mismatches == 0 && cross_eye_contamination == 0;
+    std::cout << "producer_bitness=32 mode=stereo eyes=2 temporal_frames="
+              << a.frames << " view_frames=" << view_frames
+              << " mismatches=" << mismatches
+              << " cross_eye_contamination=" << cross_eye_contamination << "\n"
+              << std::fixed << std::setprecision(4)
+              << "validation_wait_readback_mean_ms="
+              << (wait_sum_ms / static_cast<double>(view_frames)) << "\n"
+              << (passed ? "RESULT PASS\n" : "RESULT FAIL\n");
+    return passed ? 0 : 25;
   }
   if (a.backpressure_depth) {
     CloseHandle(a.control_read_handle);
