@@ -111,9 +111,9 @@ Potential cost: the translation layer can hide or transform original D3D9 state 
 
 **Verified documentation conflict/qualification:** Microsoft's broader cross-API surface-sharing overview says unsynchronized surface sharing is supported by D3D9Ex and that D3D9c/older runtimes do not support shared surfaces. The two primary pages therefore cannot safely be collapsed into the claim that every D3D9 game can share directly with D3D11.
 
-**Hypothesis:** if the route works for the target runtime, a native D3D9 adapter could preserve original renderer visibility while copying/encoding temporal payloads into purpose-built shared textures, open those textures in a private D3D11 relay, and reuse the D3D11 -> x64 modern-host transport. This could avoid whole-renderer translation through dgVoodoo2.
+**Implemented/host-tested:** the minimal Win32 probe now separates classic D3D9 from D3D9Ex on the current NVIDIA host. Classic `IDirect3D9` returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` into D3D11, with `SRV|RTV` bind flags, explicit D3D9 event-query completion, one `64x64 -> 96x72` recreation and zero mismatches over 12 frames. Five repeated runs reproduced the same boundary. The documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails on this host, while an `A8R8G8B8 -> B8G8R8A8_UNORM` control outside the documented list succeeds; that control is host/driver evidence only.
 
-**Experiment-pending:** a minimal D3D9/D3D9Ex producer -> D3D11 consumer probe must test classic D3D9 and D3D9Ex separately, the documented formats, pixel correctness, synchronization, resize/recreation and driver/OS behavior before this route is used architecturally.
+**Current architectural implication:** on this host the native relay candidate is specifically D3D9Ex -> purpose-built shared texture -> private D3D11 device -> existing modern transport. Classic D3D9 still requires another transport or a translation route unless a different OS/driver target proves otherwise. The next probe must establish how a real D3D9Ex render target reaches the relay texture, how device reset/recreation behaves, and how the D3D11 relay feeds the existing x86 -> x64 bridge.
 
 ## D3D8 routes
 
@@ -229,8 +229,8 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 
 1. Re-check the exact backend binaries, source files and third-party notices selected for any future distribution immediately before shipping; current NVIDIA, AMD, Intel, ReShade and dgVoodoo2 primary terms are now recorded at the level needed for architecture research.
 2. Re-check PE machine type when selecting a future AMD FSR SDK release for integration; `v2.3.0` signed DX12 DLLs are now verified x64.
-3. Run the minimal classic-D3D9 vs D3D9Ex -> D3D11 shared-texture probe before committing to a D3D9 transport architecture.
-4. Controlled measurement of copies and latency in a D3D11 x86 -> D3D12 x64 bridge.
+3. Move the proven D3D9Ex boundary from synthetic `UpdateTexture` input to a real local render-target -> relay copy, including reset/recreation behavior.
+4. Connect the D3D11 side of the D3D9Ex relay to the existing x86 -> x64 bridge and account for the complete producer-to-modern-host transfer path.
 5. Motion-vector quality ladder on static geometry, skinned geometry, particles, and independently moving first-person/VR objects.
 6. A renderer-resolution control strategy for real SR in engines that hard-code backbuffer-sized targets.
 7. A controlled render-stage/resolution-assumption matrix for post-process, highlights/HUD, particles/billboards and mip bias when render and output extents differ.

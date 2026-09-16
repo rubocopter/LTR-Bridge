@@ -1,6 +1,6 @@
 # Evidence-based compatibility matrix
 
-Snapshot: 2026-09-13. This is a research matrix, not a product support table.
+Snapshot: 2026-09-16. This is a research matrix, not a product support table.
 
 States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`, `live-tested`, `visual-validated`, `performance-validated`, `vr-headset-validated`, `supported`.
 
@@ -10,8 +10,8 @@ States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`,
 | D3D11 x86 -> D3D12 x64 host | planned | no translation expected | observed-upstream | unknown | unknown | unknown | DLSS5-Feeder demonstrates GPU-resident cross-bitness transport. |
 | D3D10 x86 -> D3D11 relay -> x64 host | planned | observed-upstream relay | observed-upstream | unknown | unknown | unknown | Current DLSS5-Feeder D3D10 route. |
 | D3D10 direct to modern host | unknown | n/a | unknown | unknown | unknown | unknown | D3D10 lacks the D3D11 NT-handle/fence path used by current bridge designs. |
-| D3D9 classic -> D3D11 relay | planned | documented interop, runtime applicability unresolved | unknown | unknown | unknown | unknown | `OpenSharedResource` documents D3D9->D3D11 textures, while broader Microsoft guidance says shared surfaces require D3D9Ex. Local probe required. |
-| D3D9Ex -> D3D11 relay | planned | documented platform path | possible downstream | unknown | unknown | unknown | D3D9Ex unsynchronized sharing is documented; format/usage restrictions still require purpose-built relay textures and explicit sync. |
+| D3D9 classic -> D3D11 relay | host-tested negative boundary | current-host shared creation rejected | unknown | unknown | unknown | unknown | Win32 probe: all tested `CreateTexture(..., pSharedHandle)` cases return `D3DERR_INVALIDCALL` on the current RTX 4070 Ti host; five repetitions stable. Do not generalize beyond this host/runtime. |
+| D3D9Ex -> D3D11 relay | host-tested | current-host shared relay works for selected formats | possible downstream | unknown | unknown | unknown | R10G10B10A2 and RGBA16F open in D3D11 as `SRV|RTV`, survive recreation and validate with zero mismatches; documented RGBA8 fails here, while BGRA8 works as an observed driver-specific control. |
 | D3D9 -> dgVoodoo2 -> D3D11 | planned comparison | observed-upstream | observed-upstream downstream | observed-upstream in Feeder-style stack | not demonstrated as real SR | unknown | Existing community tooling uses this route. |
 | D3D8 native | unknown | planned | unknown | unknown | unknown | unknown | Requires D3D8-specific investigation. |
 | D3D8 -> dgVoodoo2 -> D3D11 | planned | observed in ecosystem | possible downstream | unknown | unknown | unknown | Deployment tools use this route; LTR Bridge has not validated it. |

@@ -91,15 +91,17 @@ Native D3D9 resources are not a drop-in D3D12 transport object, but Microsoft do
 
 That path is heavily constrained: 2D, one mip, default usage, no MSAA, and only a small format set (`R10G10B10A2_UNORM`, `R16G16B16A16_FLOAT`, `R8G8B8A8_UNORM`). It therefore looks more like a purpose-built relay surface than a way to expose arbitrary native game resources.
 
-Microsoft's broader interoperability documentation also says unsynchronized sharing is supported by D3D9Ex while D3D9c and older runtimes do not support shared surfaces. The apparent mismatch with the `OpenSharedResource` page is an explicit experiment target; LTR Bridge must not generalize the route to classic D3D9 before testing it.
+Microsoft's broader interoperability documentation also says unsynchronized sharing is supported by D3D9Ex while D3D9c and older runtimes do not support shared surfaces. The local Win32 probe now agrees with that narrower reading on the current host: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested shared-texture creation, while D3D9Ex successfully exports R10G10B10A2 and RGBA16F resources that D3D11 opens as `SRV|RTV`. The result has been repeated five times with resource recreation and zero pixel mismatches, but remains host/driver-scoped evidence rather than a universal Windows rule.
+
+The D3D9Ex probe also found a format nuance that matters for a practical relay: documented `A8B8G8R8 -> R8G8B8A8_UNORM` shared creation fails on this host, whereas an `A8R8G8B8 -> B8G8R8A8_UNORM` control outside the documented interop list succeeds. The portable relay contract therefore should stay on the documented R10/RGBA16F paths until more hardware is tested; BGRA8 can be treated only as an optional capability discovered at runtime.
 
 Candidate routes:
 
-1. classic D3D9/D3D9Ex adapter -> dedicated relay textures -> private D3D11 device -> modern sharing, if the runtime/driver permits it;
-2. direct D3D9 adapter -> another explicit transport proven by a focused spike;
+1. D3D9Ex adapter -> dedicated relay textures -> private D3D11 device -> modern sharing; this is now the leading native route on the current host;
+2. classic D3D9 adapter -> another explicit transport if direct sharing is unavailable;
 3. D3D9 -> dgVoodoo2 -> D3D11 -> modern sharing.
 
-No route is selected yet.
+The next decision gate is a real-render-target -> D3D9Ex relay copy plus reset/recreation behavior, followed by connection of that D3D11 relay to the already-proven x86 -> x64 bridge.
 
 ## Host-created vs client-created resources
 

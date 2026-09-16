@@ -24,6 +24,8 @@ The first optional real backend probe is also implemented: XeSS SDK 3.0.2 Native
 
 The bridge now also has a renderer-transfer matrix on the x86 side. It covers same-format `CopyResource` through 4K, a 4x-MSAA `ResolveSubresource` path, and a fullscreen conversion from local `R10G10B10A2_UNORM` into the shared RGBA8 transport resource. All three larger profiles preserve live resource replacement and deterministic end-to-end validation. These are controlled single-host transfer measurements, not representative engine or VR performance results.
 
+The first legacy-API boundary probe is also implemented. A Win32 test compares classic D3D9 and D3D9Ex sharing directly into D3D11 on the same adapter. On the current host, classic D3D9 rejects shared texture creation, while D3D9Ex successfully shares R10G10B10A2 and RGBA16F resources through recreation with zero pixel mismatches. A BGRA8 control also works even though it is outside the documented D3D9 -> D3D11 format list. This narrows the promising native D3D9 route to a D3D9Ex relay on this host; real-render-target copies, reset behavior and downstream x64 integration remain to be tested.
+
 This order is a research hypothesis, not a permanent product architecture.
 
 ## Documentation

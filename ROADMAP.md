@@ -85,13 +85,18 @@ Also test Shader Model 4-compatible MV reconstruction paths and compare event-qu
 
 ## Phase 5 — D3D9 architecture comparison
 
-Status: **planned**.
+Status: **minimal x86 classic-D3D9/D3D9Ex -> D3D11 interop probe implemented and host-tested; current-host D3D9Ex relay proven for R10G10B10A2/RGBA16F plus a BGRA8 control, classic D3D9 shared creation rejected; renderer-source copy, device reset and downstream x64 integration pending**.
 
 Start with a minimal API-interop probe before attempting reconstruction:
 
-- classic D3D9 producer -> documented shared texture -> D3D11 consumer;
-- D3D9Ex producer -> the same D3D11 consumer;
-- verify allowed formats, pixel contents, synchronization, resize/recreation, OS/driver behavior and whether the classic-D3D9 case is genuinely supported.
+- [x] classic D3D9 producer -> shared-texture creation attempt -> D3D11 consumer boundary;
+- [x] D3D9Ex producer -> shared texture -> D3D11 consumer;
+- [x] verify first-host format behavior, pixel contents, explicit event-query synchronization and resource recreation;
+- [ ] copy from a realistic D3D9 render target into the relay texture and measure that adapter cost;
+- [ ] exercise D3D9/D3D9Ex device reset and relay-resource recreation;
+- [ ] feed the D3D11 relay into the existing x86 -> x64 transport path.
+
+Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` with D3D11, including `64x64 -> 96x72` recreation and 12 zero-mismatch frames per format. The documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails on this host, while an out-of-document `A8R8G8B8 -> B8G8R8A8_UNORM` control succeeds. Five additional repetitions reproduced all of these boundaries. This is host-specific interop evidence, not a universal D3D9 support table.
 
 Then compare three routes on the same controlled target:
 
