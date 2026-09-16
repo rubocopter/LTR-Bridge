@@ -6,6 +6,8 @@ Updated: 2026-09-16.
 
 The repository is still in research/probe phase. There is no production injector and no existing game-mod repository is a dependency.
 
+The documentation has been reconciled to the current probe state: completed transport/D3D9Ex/XeSS/OpenXR-bootstrap work is no longer listed as merely planned, while real-game interception, D3D10 reproduction, broader backend comparison, OpenXR presentation and headset validation remain explicit pending work.
+
 Current local evidence is concentrated in four implemented areas:
 
 1. **D3D11 x64 temporal harness — host-tested / visual-validated.** Controlled static, camera, rigid-object, deforming-geometry, masked-particle, blended-transparency, HUD and disocclusion scenarios exercise jitter, shader-readable depth, ground-truth MV, explicit history reset/validity, camera+depth reconstruction and an independent synthetic optical-flow baseline.

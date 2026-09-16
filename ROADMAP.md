@@ -4,7 +4,7 @@ The roadmap is evidence-driven. Items must be rechecked against repository state
 
 ## Phase 0 — research baseline
 
-Status: **implemented (documentation), not experimentally validated**.
+Status: **implemented as the research baseline; later phases now provide host-tested evidence for the temporal harness, x86/x64 transport, XeSS Native AA, OpenXR runtime bootstrap and the current-host D3D9Ex relay**.
 
 - [x] Establish independent repository scope and working rules.
 - [x] Record current DLSS5-Feeder architecture, including x86 helper and D3D10 relay findings.

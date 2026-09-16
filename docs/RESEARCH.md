@@ -1,4 +1,4 @@
-# Research snapshot — 2026-09-13
+# Research snapshot — 2026-09-16
 
 This document records the first two research passes. It distinguishes upstream behavior from conclusions that still need local experiments.
 
@@ -191,46 +191,21 @@ This also shows that `native motion vectors` is insufficient metadata. Provenanc
 
 Full case studies: `docs/CASE_STUDY_BIOSHOCK_VR.md` and `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`.
 
-## Second-pass architectural conclusion
+## Current synthesis
 
-The evidence now supports treating the x64 modern host as a reusable capability rather than an NVIDIA-specific workaround. Streamline targets 64-bit Windows, XeSS-SR is x64, and the current FSR API centers its backend-specific path on D3D12. The exact backend can remain replaceable while legacy adapters converge on a modern resource/synchronization boundary.
+The evidence now supports an x64 modern host as a reusable capability rather than an NVIDIA-specific workaround. Streamline targets 64-bit Windows, XeSS-SR is x64, and the inspected FidelityFX 2.3.0 signed DX12 runtime is x64. D3D12 therefore remains the best-supported first host for controlled cross-backend experiments without becoming a universal architectural requirement.
 
-This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the best-supported first host for the controlled bridge experiments because it maximizes overlap among current backend paths and proven sharing primitives.
+The local probes have also moved several earlier hypotheses into **host-tested** territory: the D3D11 x64 temporal harness, GPU-resident D3D11 x86 -> D3D12 x64 transport, bounded queueing and failure handling, synthetic per-eye isolation/history, XeSS 3.0.2 Native AA execution, OpenXR runtime bootstrap, and the current-host D3D9Ex -> private D3D11 -> modern-host relay. These results are controlled and mostly synthetic; they do not establish real-game, multi-host, performance, OpenXR-presentation or headset support.
 
-## First-pass conclusions
-
-### Verified/strongly supported
-
-- Modern temporal reconstruction depends on correct temporal semantics, not merely access to the final backbuffer.
-- Real SR needs control of render resolution and projection jitter; post-process resize is not equivalent.
-- D3D11/D3D12 can support cross-process GPU resource and fence sharing through NT handles.
-- x86 game -> x64 modern helper is technically viable; DLSS5-Feeder demonstrates this pattern in real software.
-- D3D10 requires a different bridge strategy than D3D11 for modern helper interop; a private D3D11 relay is a demonstrated option.
-- Microsoft documents a constrained D3D9 -> D3D11 shared-texture path; the current-host probe resolves the practical split here as D3D9Ex-capable for the tested relay formats while classic D3D9 shared creation is rejected.
-- ReShade offers useful API/depth observation across D3D9/10/11 but has API-specific constraints.
-- OptiScaler assumes a substantially more modern temporal integration than many legacy games provide.
-- DLSS, FidelityFX temporal upscaling, and XeSS overlap on color/depth/MV/jitter concepts but do not have identical contracts.
-- Current Streamline and XeSS requirements independently justify researching an x64 host for x86 legacy games; current FSR API design further strengthens D3D12 as the first common host target.
-
-### Hypotheses requiring local experiments
-
-- D3D11 x64 + native-resolution AA is the best first harness for validating the contract.
-- A generic x86/x64 transport can be backend-independent if it transports typed frame resources and synchronization rather than DLSS-specific state.
-- D3D10 can reuse most of a D3D11 transport behind a relay without unacceptable latency.
-- Direct D3D9Ex interception plus a constrained D3D11 relay can reuse the modern transport on the current host; broader hardware/runtime coverage and real-game integration remain open.
-- D3D8 should be evaluated through native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths rather than inheriting the D3D9 decision automatically.
-- Image-space flow with confidence is a useful baseline but remains semantically weaker than renderer-native/transform-derived motion, especially for SR and VR.
-- ReShade demonstrates practical depth discovery/preservation techniques, but depth selection must retain provenance and support game/profile overrides.
-- Real-game evidence now supports an explicit temporal-quality ladder: renderer-native camera+object motion > camera+depth reconstruction > optical flow, while still requiring coverage/exclusion metadata because native MV buffers can be incomplete.
-- Real SR integration must validate render-stage ordering and resolution-dependent engine assumptions, not only backend inputs and output size.
-- Per-eye temporal reconstruction can fit the same broad layers while requiring separate history, timing, and validation policies.
+The central unresolved problem remains temporal-data quality in real engines. Renderer-native camera/object motion is the strongest provenance seen in the case studies, camera+depth reconstruction is partial, and image-space optical flow is a lower-fidelity fallback/baseline. Coverage must be tracked independently because even native MV buffers can omit cloth, particles or other animated content. Real SR additionally requires renderer-resolution control, genuine projection jitter and validation of resolution-dependent engine behavior.
 
 ## Immediate research gaps
 
-1. Re-check the exact backend binaries, source files and third-party notices selected for any future distribution immediately before shipping; current NVIDIA, AMD, Intel, ReShade and dgVoodoo2 primary terms are now recorded at the level needed for architecture research.
-2. Re-check PE machine type when selecting a future AMD FSR SDK release for integration; `v2.3.0` signed DX12 DLLs are now verified x64.
-3. Intercept a controlled real D3D9Ex scene/game path and exercise engine-owned render-target hazards/scheduling through the proven relay.
-4. Compare the native D3D9Ex relay with dgVoodoo2 on that same controlled target.
-5. Motion-vector quality ladder on static geometry, skinned geometry, particles, and independently moving first-person/VR objects.
-6. A renderer-resolution control strategy for real SR in engines that hard-code backbuffer-sized targets.
-7. A controlled render-stage/resolution-assumption matrix for post-process, highlights/HUD, particles/billboards and mip bias when render and output extents differ.
+1. Intercept a controlled real D3D9Ex scene/game path and exercise engine-owned render-target hazards, scheduling, reset behavior and depth/transform visibility through the proven relay.
+2. Compare that native D3D9Ex route with dgVoodoo2 on the same controlled target.
+3. Reproduce the D3D10 -> private D3D11 relay locally and measure its synchronization/copy behavior.
+4. Continue backend comparison from XeSS Native AA with DLSS/DLAA, FidelityFX and XeSS SR while preserving backend-specific optional inputs.
+5. Extend the motion-vector quality ladder to real skinned/cloth geometry, particles, transparency and independently moving first-person/VR objects.
+6. Establish renderer-resolution control and a render-stage/resolution-assumption matrix for real SR, including post-processing, HUD/highlights, particles/billboards, mip bias and secondary passes.
+7. When an HMD is visible to the runtime, collect OpenXR stereo-view and graphics-adapter requirements before adding graphics session, swapchains, pacing and physical-headset validation.
+8. Re-check exact backend binaries, source files, machine type and third-party notices when selecting release artifacts; current architecture research is not a release-time packaging audit.
