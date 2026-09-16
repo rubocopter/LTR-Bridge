@@ -98,7 +98,8 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 ## dgVoodoo2
 
 - Project site: http://dege.freeweb.hu/dgVoodoo2/dgVoodoo2/
-- Current ecosystem version observed in DLSS5-Swapper: 2.87.4.
+- Official package tested locally: dgVoodoo2 `2.87.5`, released 2026-09-15. `dgVoodoo2_87_5.zip` SHA-256: `5FFDE6927F7355CA3FDD5D785B581256A8E6539FA13E395A891ADE6BA1040850`.
+- Official addon API package tested locally: `dgVoodooAPI_287_5.zip` / API version `0x287`. SHA-256: `12709F30209248C50E6FE37B838D16C5B55FEA1363C0BCAD21FA82015AE16B57`. The package's D3D12 addon sample and CHM documentation define `SampleAddon.dll`, `AddOnInit`/`AddOnExit`, `IID_D3D12RootObserver`, D3D12 root/device access and swapchain presentation callbacks used by the local probe.
 - Primary redistribution terms reviewed: individual dgVoodoo files may be shipped as part of a specific game or game mod; standalone redistribution is expected to preserve the complete original package, and the author does not permit bundling dgVoodoo into a general-purpose launcher/framework intended to apply it across arbitrary applications. This materially affects any future LTR Bridge packaging strategy and should be re-checked against the then-current dgVoodoo readme before release.
 
 ## D3D8 translation

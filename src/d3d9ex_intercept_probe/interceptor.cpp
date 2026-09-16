@@ -148,13 +148,25 @@ void release_capture_resources() {
   return false;
 }
 
+[[nodiscard]] bool supported_rt_format(D3DFORMAT format) noexcept {
+  return format == D3DFMT_A2B10G10R10 || format == D3DFMT_A8R8G8B8;
+}
+
+[[nodiscard]] DXGI_FORMAT relay_dxgi_format(D3DFORMAT format) noexcept {
+  if (format == D3DFMT_A2B10G10R10)
+    return DXGI_FORMAT_R10G10B10A2_UNORM;
+  if (format == D3DFMT_A8R8G8B8)
+    return DXGI_FORMAT_B8G8R8A8_UNORM;
+  return DXGI_FORMAT_UNKNOWN;
+}
+
 [[nodiscard]] bool ensure_capture_resources(IDirect3DDevice9Ex *device,
                                             const D3DSURFACE_DESC &source_desc) {
   if (g_relay9 && g_width == source_desc.Width &&
       g_height == source_desc.Height && g_format == source_desc.Format)
     return true;
   release_capture_resources();
-  if (source_desc.Format != D3DFMT_A2B10G10R10) {
+  if (!supported_rt_format(source_desc.Format)) {
     std::cerr << "intercept_reject=unexpected_rt_format format="
               << static_cast<unsigned>(source_desc.Format) << "\n";
     return false;
@@ -177,7 +189,7 @@ void release_capture_resources() {
   D3D11_TEXTURE2D_DESC desc11{};
   g_relay11->GetDesc(&desc11);
   if (desc11.Width != source_desc.Width || desc11.Height != source_desc.Height ||
-      desc11.Format != DXGI_FORMAT_R10G10B10A2_UNORM) {
+      desc11.Format != relay_dxgi_format(source_desc.Format)) {
     std::cerr << "intercept_reject=relay_descriptor size=" << desc11.Width
               << "x" << desc11.Height
               << " format=" << static_cast<unsigned>(desc11.Format) << "\n";
@@ -218,6 +230,12 @@ struct Rgb {
           r10_to_u8((packed >> 20U) & 0x3FFU)};
 }
 
+[[nodiscard]] Rgb read_pixel(const std::uint8_t *pixel) noexcept {
+  if (g_format == D3DFMT_A8R8G8B8)
+    return {pixel[2], pixel[1], pixel[0]};
+  return read_r10(pixel);
+}
+
 [[nodiscard]] bool near_color(Rgb actual, Rgb expected) noexcept {
   const auto close = [](std::uint8_t a, std::uint8_t e) {
     return std::abs(static_cast<int>(a) - static_cast<int>(e)) <= 2;
@@ -248,13 +266,13 @@ struct Rgb {
   const Rgb clear_expected{20, 40, 120};
   const Rgb red_expected{220, 40, 40};
   const Rgb green_expected{40, 220, 40};
-  if (!near_color(read_r10(pixel_at(mapped, -0.85f, 0.80f)), clear_expected))
+  if (!near_color(read_pixel(pixel_at(mapped, -0.85f, 0.80f)), clear_expected))
     ++g_mismatches;
-  if (!near_color(read_r10(pixel_at(mapped, -0.25f, 0.0f)), red_expected))
+  if (!near_color(read_pixel(pixel_at(mapped, -0.25f, 0.0f)), red_expected))
     ++g_mismatches;
-  if (!near_color(read_r10(pixel_at(mapped, 0.0f, 0.0f)), red_expected))
+  if (!near_color(read_pixel(pixel_at(mapped, 0.0f, 0.0f)), red_expected))
     ++g_mismatches;
-  if (!near_color(read_r10(pixel_at(mapped, 0.25f, 0.0f)), green_expected))
+  if (!near_color(read_pixel(pixel_at(mapped, 0.25f, 0.0f)), green_expected))
     ++g_mismatches;
   g_context11->Unmap(g_staging11.Get(), 0);
   return true;
@@ -274,7 +292,7 @@ struct Rgb {
   if (!check(rt_before->GetDesc(&rt_desc), "GetDesc(rt)") ||
       !check(depth_before->GetDesc(&depth_desc), "GetDesc(depth)"))
     return false;
-  g_bound_rt_observed = rt_desc.Format == D3DFMT_A2B10G10R10;
+  g_bound_rt_observed = supported_rt_format(rt_desc.Format);
   g_depth_observed = depth_desc.Format == D3DFMT_D24S8 &&
                      depth_desc.Width == rt_desc.Width &&
                      depth_desc.Height == rt_desc.Height;
@@ -329,6 +347,7 @@ struct Rgb {
               << " engine_depth_observed=" << g_depth_observed
               << " world_transform_visible=" << g_transform_observed
               << " state_preserved=" << g_state_preserved
+              << " source_format=" << static_cast<unsigned>(g_format)
               << " depth_occlusion_validated=" << (g_mismatches == 0)
               << " capture_cpu_wall_mean_ms="
               << (g_capture_wall_ms / static_cast<double>(g_frames)) << "\n"

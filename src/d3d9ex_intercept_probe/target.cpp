@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <d3d9.h>
 #include <iostream>
 #include <windows.h>
@@ -80,10 +81,11 @@ struct SceneResources {
 
 [[nodiscard]] bool create_scene_resources(IDirect3DDevice9Ex *device,
                                           GenerationSpec spec,
+                                          D3DFORMAT color_format,
                                           SceneResources &out) {
   if (!check(device->CreateTexture(spec.width, spec.height, 1,
                                    D3DUSAGE_RENDERTARGET,
-                                   D3DFMT_A2B10G10R10, D3DPOOL_DEFAULT,
+                                   color_format, D3DPOOL_DEFAULT,
                                    &out.color, nullptr),
              "CreateTexture(target-color)") ||
       !check(out.color->GetSurfaceLevel(0, &out.color_surface),
@@ -149,39 +151,66 @@ struct SceneResources {
 
 } // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t **argv) {
   static_assert(sizeof(void *) == 4, "interception target must be built x86");
-  const HMODULE interceptor = LoadLibraryW(L"ltr_d3d9ex_interceptor.dll");
-  if (!interceptor) {
-    std::cerr << "LoadLibraryW(interceptor) failed error=" << GetLastError()
-              << "\n";
-    return 1;
+  D3DFORMAT color_format = D3DFMT_A2B10G10R10;
+  bool use_interceptor = true;
+  bool present = false;
+  for (int i = 1; i < argc; ++i) {
+    if (std::wcscmp(argv[i], L"--bgra8") == 0)
+      color_format = D3DFMT_A8R8G8B8;
+    else if (std::wcscmp(argv[i], L"--no-interceptor") == 0)
+      use_interceptor = false;
+    else if (std::wcscmp(argv[i], L"--present") == 0)
+      present = true;
+    else {
+      std::cerr << "usage: ltr_d3d9ex_intercept_target.exe [--bgra8] "
+                   "[--no-interceptor] [--present]\n";
+      return 12;
+    }
   }
   using InstallInterceptorFn = BOOL(WINAPI *)();
   using ShutdownInterceptorFn = void(WINAPI *)();
-  auto install = reinterpret_cast<InstallInterceptorFn>(
-      GetProcAddress(interceptor, "LtrInstallD3D9ExInterceptor"));
-  if (!install)
-    install = reinterpret_cast<InstallInterceptorFn>(
-        GetProcAddress(interceptor, "_LtrInstallD3D9ExInterceptor@0"));
-  if (!install || !install()) {
-    std::cerr << "Install D3D9Ex interceptor failed error=" << GetLastError()
-              << "\n";
-    return 1;
-  }
-  auto shutdown = reinterpret_cast<ShutdownInterceptorFn>(
-      GetProcAddress(interceptor, "LtrShutdownD3D9ExInterceptor"));
-  if (!shutdown)
+  HMODULE interceptor = nullptr;
+  ShutdownInterceptorFn shutdown = nullptr;
+  if (use_interceptor) {
+    interceptor = LoadLibraryW(L"ltr_d3d9ex_interceptor.dll");
+    if (!interceptor) {
+      std::cerr << "LoadLibraryW(interceptor) failed error=" << GetLastError()
+                << "\n";
+      return 1;
+    }
+    auto install = reinterpret_cast<InstallInterceptorFn>(
+        GetProcAddress(interceptor, "LtrInstallD3D9ExInterceptor"));
+    if (!install)
+      install = reinterpret_cast<InstallInterceptorFn>(
+          GetProcAddress(interceptor, "_LtrInstallD3D9ExInterceptor@0"));
+    if (!install || !install()) {
+      std::cerr << "Install D3D9Ex interceptor failed error=" << GetLastError()
+                << "\n";
+      return 1;
+    }
     shutdown = reinterpret_cast<ShutdownInterceptorFn>(
-        GetProcAddress(interceptor, "_LtrShutdownD3D9ExInterceptor@0"));
-  if (!shutdown) {
-    std::cerr << "Locate D3D9Ex interceptor shutdown failed error="
-              << GetLastError() << "\n";
-    return 1;
+        GetProcAddress(interceptor, "LtrShutdownD3D9ExInterceptor"));
+    if (!shutdown)
+      shutdown = reinterpret_cast<ShutdownInterceptorFn>(
+          GetProcAddress(interceptor, "_LtrShutdownD3D9ExInterceptor@0"));
+    if (!shutdown) {
+      std::cerr << "Locate D3D9Ex interceptor shutdown failed error="
+                << GetLastError() << "\n";
+      return 1;
+    }
   }
   const HWND hwnd = create_hidden_window();
   if (!hwnd)
     return 2;
+  if (present) {
+    SetWindowPos(hwnd, nullptr, 0, 0, static_cast<int>(kGenerations[0].width),
+                 static_cast<int>(kGenerations[0].height),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    UpdateWindow(hwnd);
+  }
 
   ComPtr<IDirect3D9Ex> d3d9;
   if (!check(Direct3DCreate9Ex(D3D_SDK_VERSION, &d3d9),
@@ -195,8 +224,8 @@ int wmain() {
   pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
   pp.hDeviceWindow = hwnd;
   pp.BackBufferFormat = D3DFMT_UNKNOWN;
-  pp.BackBufferWidth = 64;
-  pp.BackBufferHeight = 64;
+  pp.BackBufferWidth = present ? kGenerations[0].width : 64U;
+  pp.BackBufferHeight = present ? kGenerations[0].height : 64U;
   pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 
   ComPtr<IDirect3DDevice9Ex> device;
@@ -227,7 +256,7 @@ int wmain() {
        ++generation) {
     SceneResources resources;
     if (!create_scene_resources(device.Get(), kGenerations[generation],
-                                resources)) {
+                                color_format, resources)) {
       DestroyWindow(hwnd);
       return 6;
     }
@@ -237,6 +266,24 @@ int wmain() {
                         frame)) {
         DestroyWindow(hwnd);
         return 7;
+      }
+      if (present &&
+          (!check(device->StretchRect(resources.color_surface.Get(), nullptr,
+                                      default_rt.Get(), nullptr,
+                                      D3DTEXF_NONE),
+                  "StretchRect(target-present)") ||
+           !check(device->PresentEx(nullptr, nullptr, nullptr, nullptr, 0),
+                  "PresentEx(target)"))) {
+        DestroyWindow(hwnd);
+        return 13;
+      }
+      if (present) {
+        MSG msg{};
+        while (PeekMessageW(&msg, hwnd, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&msg);
+          DispatchMessageW(&msg);
+        }
+        Sleep(16);
       }
     }
 
@@ -250,8 +297,13 @@ int wmain() {
     resources = {};
     if (generation + 1U < std::size(kGenerations)) {
       default_rt.Reset();
-      pp.BackBufferWidth += 16U;
-      pp.BackBufferHeight += 16U;
+      if (present) {
+        pp.BackBufferWidth = kGenerations[generation + 1U].width;
+        pp.BackBufferHeight = kGenerations[generation + 1U].height;
+      } else {
+        pp.BackBufferWidth += 16U;
+        pp.BackBufferHeight += 16U;
+      }
       if (!check(device->ResetEx(&pp, nullptr), "ResetEx(target)")) {
         DestroyWindow(hwnd);
         return 9;
@@ -266,11 +318,16 @@ int wmain() {
   }
 
   std::cout << "target_frames=" << frame << " target_resets=" << resets
+            << " color_format=" << static_cast<unsigned>(color_format)
+            << " interceptor=" << use_interceptor << " present=" << present
+            << " d3d11_loaded=" << (GetModuleHandleW(L"d3d11.dll") != nullptr)
+            << " d3d12_loaded=" << (GetModuleHandleW(L"d3d12.dll") != nullptr)
             << " RESULT PASS\n";
   default_rt.Reset();
   device.Reset();
   d3d9.Reset();
-  shutdown();
+  if (shutdown)
+    shutdown();
   DestroyWindow(hwnd);
   return frame == 12 && resets == 1 ? 0 : 11;
 }

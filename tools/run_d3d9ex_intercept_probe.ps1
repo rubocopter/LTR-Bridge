@@ -31,7 +31,7 @@ try {
     if ($exitCode -ne 0) { throw "Interception target failed: $exitCode" }
     $text = $captured -join "`n"
     if ($text -notmatch "INTERCEPT_RESULT PASS") { throw "Interceptor result was not observed" }
-    if ($text -notmatch "target_frames=12 target_resets=1 RESULT PASS") { throw "Target result was not observed" }
+    if ($text -notmatch "target_frames=12 target_resets=1 .*RESULT PASS") { throw "Target result was not observed" }
 } finally {
     Pop-Location
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue

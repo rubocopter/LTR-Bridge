@@ -99,6 +99,50 @@ if(LTR_ENABLE_D3D9EX_INTERCEPT_PROBE)
     endif()
 endif()
 
+option(LTR_ENABLE_DGVOODOO_ADDON_PROBE "Build the dgVoodoo2 D3D12 presentation-observer addon probe" OFF)
+set(LTR_DGVOODOO_API_ROOT "" CACHE PATH "Path to an external dgVoodoo API package root")
+if(LTR_ENABLE_DGVOODOO_ADDON_PROBE)
+    if(NOT WIN32)
+        message(FATAL_ERROR "dgVoodoo addon probe requires Windows")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR "dgVoodoo addon probe currently targets Win32/x86 to match the controlled D3D9 target")
+    endif()
+    if(NOT LTR_DGVOODOO_API_ROOT)
+        message(FATAL_ERROR "LTR_DGVOODOO_API_ROOT must point to an external dgVoodoo API package root")
+    endif()
+
+    set(_ltr_dgvoodoo_inc "${LTR_DGVOODOO_API_ROOT}/Inc")
+    set(_ltr_dgvoodoo_addon_header "${_ltr_dgvoodoo_inc}/Addon/ID3D12RootObserver.hpp")
+    set(_ltr_dgvoodoo_addon_lib "${LTR_DGVOODOO_API_ROOT}/Lib/x86/dgVoodooAddon.lib")
+    foreach(_required IN ITEMS "${_ltr_dgvoodoo_addon_header}" "${_ltr_dgvoodoo_addon_lib}")
+        if(NOT EXISTS "${_required}")
+            message(FATAL_ERROR "Required dgVoodoo addon API artifact not found: ${_required}")
+        endif()
+    endforeach()
+
+    add_library(ltr_dgvoodoo_addon_probe SHARED src/dgvoodoo_addon_probe/addon.cpp)
+    target_compile_features(ltr_dgvoodoo_addon_probe PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_dgvoodoo_addon_probe PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _APIDLL
+        _WINDLL
+        BUILD_AS_DLL
+        _NO_CRT_STDIO_INLINE
+        _CRT_SECURE_NO_WARNINGS)
+    target_include_directories(ltr_dgvoodoo_addon_probe PRIVATE "${_ltr_dgvoodoo_inc}")
+    target_link_libraries(ltr_dgvoodoo_addon_probe PRIVATE d3d12 dxgi dxguid "${_ltr_dgvoodoo_addon_lib}")
+    set_target_properties(ltr_dgvoodoo_addon_probe PROPERTIES
+        OUTPUT_NAME "SampleAddon"
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dgvoodoo-addon-bin"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dgvoodoo-addon-lib")
+    if(MSVC)
+        target_compile_options(ltr_dgvoodoo_addon_probe PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus /Zc:threadSafeInit-)
+    endif()
+endif()
+
 option(LTR_ENABLE_D3D10_D3D11_RELAY_PROBE "Build the D3D10.1 -> private D3D11 legacy shared-resource relay probe" OFF)
 if(LTR_ENABLE_D3D10_D3D11_RELAY_PROBE)
     if(NOT WIN32)

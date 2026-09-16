@@ -105,7 +105,11 @@ Potential benefit: downstream logic sees a D3D11 device and can reuse modern sha
 
 Potential cost: the translation layer can hide or transform original D3D9 state that a direct adapter might use to recover per-draw transforms or game-specific temporal information. Proxy-DLL ownership and compatibility with other injectors/mods also become part of the stack.
 
-**Experiment-pending:** compare direct D3D9 interception against dgVoodoo2 on the same target. No default route is selected yet.
+**Implemented/host-tested controlled comparison:** official dgVoodoo2 2.87.5 was exercised against the same external D3D9Ex target used by the native interception probe. The R10 scene target is rejected by the wrapper with `D3DERR_INVALIDCALL`. The target's BGRA8 profile renders through the wrapper, but the native interceptor's attempt to create its shared D3D9Ex relay is rejected with the same error. The proven native D3D9Ex shared-relay architecture therefore does not pass through dgVoodoo unchanged on this host/version.
+
+**Implemented/host-tested D3D12 addon boundary:** the official dgVoodoo API 2.87.5 package exposes an experimental addon interface for D3D12 presentation. `src/dgvoodoo_addon_probe/` builds `SampleAddon.dll` against that external API without vendoring it. With `OutputAPI=d3d12_fl11_0`, the addon reports API version `0x287`, receives `D3D12RootCreated`, gets a non-null `ID3D12Device`, observes two swapchain generations (`640x360` and `1280x720`) and receives 12 matched presentation begin/end callbacks. All 12 callbacks contain non-null source and destination resources; this profile exposes `DXGI_FORMAT_R8G8B8A8_TYPELESS` source textures and `DXGI_FORMAT_R8G8B8A8_UNORM` drawing targets. Five repeated runs reproduce the lifecycle. The probe does not submit commands or replace the output texture.
+
+**Boundary implication:** the native hook sees original D3D9Ex render target, D24S8 depth and world transform after `EndScene`; the proven dgVoodoo addon callback sees translated D3D12 presentation resources. The latter is a valid modern color/presentation interception point, but this experiment does not show original D3D9 depth, transforms or motion vectors at that point. Those capabilities must be investigated separately rather than inferred from the successful color presentation callback.
 
 **Verified from the current primary distribution terms:** dgVoodoo2 permits selected files to accompany a specific game/game mod, while general standalone redistribution has stricter packaging requirements and embedding it in a general-purpose launcher/framework is restricted. Therefore LTR Bridge must not assume it can redistribute dgVoodoo2 as a generic built-in translation component even if the technical experiment favors that route.
 
@@ -209,8 +213,8 @@ The central unresolved problem remains temporal-data quality in real engines. Re
 
 ## Immediate research gaps
 
-1. Compare the now-intercepted native D3D9Ex controlled target with dgVoodoo2 on the same scene and record state/depth visibility, relay copies and reset behavior.
-2. Move the proven D3D9Ex interception pattern into a real game only after the native-vs-translation comparison justifies the route; keep generic injection/deployment separate from the capture experiment.
+1. Exercise the native D3D9Ex boundary and the dgVoodoo D3D12-addon boundary in a real D3D9Ex title, recording which game-specific color/depth/transform/MV data is actually visible at each point; keep generic injection/deployment separate from the capture experiment.
+2. For dgVoodoo specifically, investigate whether its frontend D3D observer interfaces expose useful pre-presentation depth/transform/resource provenance without assuming that the D3D12 presentation callback contains it.
 3. Extend the D3D10 work from the proven color relay into depth preservation, an SM4-compatible temporal-data provider and a real interception boundary; repeat it on additional D3D10.0/10.1 hardware/driver configurations.
 4. Continue backend comparison from XeSS Native AA with DLSS/DLAA, FidelityFX and XeSS SR while preserving backend-specific optional inputs.
 5. Extend the motion-vector quality ladder to real skinned/cloth geometry, particles, transparency and independently moving first-person/VR objects.
