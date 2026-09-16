@@ -88,6 +88,11 @@ struct Options {
         return false;
       o.renderer_copy_mode = 4U;
       o.renderer_profile = L"d3d9ex-r10-relay";
+    } else if (k == L"--d3d9ex-relay-highres") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 4U;
+      o.renderer_profile = L"d3d9ex-r10-relay-highres";
     } else
       return false;
   }
@@ -144,7 +149,8 @@ int wmain(int argc, wchar_t **argv) {
            " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
            "--stereo-history|--stereo-history-swap] [--renderer-copy|"
            "--renderer-copy-highres|--renderer-resolve-msaa4x|"
-           "--renderer-convert-r10|--d3d9ex-relay]\n";
+           "--renderer-convert-r10|--d3d9ex-relay|"
+           "--d3d9ex-relay-highres]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -169,6 +175,9 @@ int wmain(int argc, wchar_t **argv) {
     specs[1] = {3840, 2160};
   } else if (o.renderer_profile == L"msaa4x-resolve" ||
              o.renderer_profile == L"r10-to-rgba8") {
+    specs[0] = {1920, 1080};
+    specs[1] = {2560, 1440};
+  } else if (o.renderer_profile == L"d3d9ex-r10-relay-highres") {
     specs[0] = {1920, 1080};
     specs[1] = {2560, 1440};
   }
@@ -1002,7 +1011,9 @@ int wmain(int argc, wchar_t **argv) {
     mode_name = "renderer-convert";
     transfer_kind = "shader-r10-to-rgba8";
   } else if (o.renderer_copy_mode == 4U) {
-    mode_name = "d3d9ex-relay";
+    mode_name = o.renderer_profile == L"d3d9ex-r10-relay-highres"
+                    ? "d3d9ex-relay-highres"
+                    : "d3d9ex-relay";
     transfer_kind = "d3d9ex-r10-relay-shader";
   }
   std::cout << "consumer_bitness=64 mode=" << mode_name

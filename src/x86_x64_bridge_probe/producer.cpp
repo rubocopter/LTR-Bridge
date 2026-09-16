@@ -281,6 +281,7 @@ int wmain(int argc, wchar_t **argv) {
   ComPtr<ID3D11PixelShader> renderer_ps;
   ComPtr<IDirect3D9Ex> d3d9ex;
   ComPtr<IDirect3DDevice9Ex> d3d9_device;
+  ComPtr<IDirect3DSurface9> d3d9_default_render_target;
   ComPtr<IDirect3DTexture9>
       d3d9_renderer_target[ltr::bridge_probe::kGenerationCount],
       d3d9_relay[ltr::bridge_probe::kGenerationCount];
@@ -342,6 +343,9 @@ int wmain(int argc, wchar_t **argv) {
           D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED,
           &d3d9_pp, nullptr, &d3d9_device);
     if (!check(d3d9_hr, "IDirect3D9Ex::CreateDeviceEx(renderer-relay)"))
+      return 10;
+    if (!check(d3d9_device->GetRenderTarget(0, &d3d9_default_render_target),
+               "IDirect3DDevice9Ex::GetRenderTarget(default)"))
       return 10;
     std::cout << "d3d9ex_relay_adapter_luid_match=1\n";
   }
@@ -901,6 +905,7 @@ int wmain(int argc, wchar_t **argv) {
       d3d9_relay[0].Reset();
       d3d9_renderer_target[0].Reset();
       if (a.renderer_copy_mode == 4U) {
+        d3d9_default_render_target.Reset();
         d3d9_pp.BackBufferWidth += 8U;
         d3d9_pp.BackBufferHeight += 8U;
         const HRESULT reset_hr = d3d9_device->ResetEx(&d3d9_pp, nullptr);
@@ -909,6 +914,12 @@ int wmain(int argc, wchar_t **argv) {
                   << " backbuffer=" << d3d9_pp.BackBufferWidth << "x"
                   << d3d9_pp.BackBufferHeight << "\n";
         if (!check(reset_hr, "IDirect3DDevice9Ex::ResetEx(renderer-relay)")) {
+          CloseHandle(fh);
+          return 10;
+        }
+        if (!check(d3d9_device->GetRenderTarget(
+                       0, &d3d9_default_render_target),
+                   "IDirect3DDevice9Ex::GetRenderTarget(default-after-reset)")) {
           CloseHandle(fh);
           return 10;
         }
@@ -1014,9 +1025,15 @@ int wmain(int argc, wchar_t **argv) {
         ctx->End(copy_end[frame].Get());
       } else if (a.renderer_copy_mode == 4U) {
         const auto relay_start = std::chrono::steady_clock::now();
-        if (!check(d3d9_device->ColorFill(d3d9_renderer_surface[g].Get(), nullptr,
-                                          relay_frame_color(frame)),
-                   "ColorFill(D3D9Ex renderer-target)") ||
+        if (!check(d3d9_device->SetRenderTarget(
+                       0, d3d9_renderer_surface[g].Get()),
+                   "SetRenderTarget(D3D9Ex renderer-target)") ||
+            !check(d3d9_device->Clear(0, nullptr, D3DCLEAR_TARGET,
+                                      relay_frame_color(frame), 1.0f, 0),
+                   "Clear(D3D9Ex renderer-target)") ||
+            !check(d3d9_device->SetRenderTarget(
+                       0, d3d9_default_render_target.Get()),
+                   "SetRenderTarget(D3D9Ex default)") ||
             !check(d3d9_device->StretchRect(
                        d3d9_renderer_surface[g].Get(), nullptr,
                        d3d9_relay_surface[g].Get(), nullptr, D3DTEXF_NONE),
@@ -1200,6 +1217,7 @@ int wmain(int argc, wchar_t **argv) {
               << " d3d9ex_renderer_to_relay_cpu_wall_mean_ms="
               << (d3d9_relay_wall_sum_ms / static_cast<double>(total))
               << " d3d9ex_device_resets=" << d3d9_device_resets
+              << " renderer_source=bound_render_target_clear"
               << " validation_tolerance=rgb8_plus_minus_1_lsb\n";
   }
   if (d3d9_hwnd)
