@@ -52,7 +52,7 @@ if (-not (Test-Path $producer) -or -not (Test-Path $consumer)) {
 Write-Host "=== positive multiframe/generation-size probe ==="
 Invoke-Checked $consumer @("--producer", $producer)
 
-foreach ($negative in @("protocol", "adapter", "resource-contract", "host-stall")) {
+foreach ($negative in @("protocol", "adapter", "resource-contract", "host-stall", "dynamic-control")) {
     Write-Host "=== negative probe: $negative ==="
     Invoke-Checked $consumer @("--producer", $producer, "--negative", $negative)
 }

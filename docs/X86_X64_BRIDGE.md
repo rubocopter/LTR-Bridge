@@ -1,6 +1,6 @@
 # x86 -> x64 bridge research
 
-Status: **local D3D11 x86 -> D3D12 x64 multiframe prototype implemented and host-tested; repeated frames, a controlled resource-generation size change, timestamp/copy accounting and basic negative-path diagnostics are covered; dynamic rebuild, real host termination, backpressure and stereo remain pending**.
+Status: **local D3D11 x86 -> D3D12 x64 multiframe prototype implemented and host-tested; repeated frames, true mid-run resource replacement, timestamp/copy accounting and negative-path diagnostics are covered; real process/device loss, backpressure and stereo remain pending**.
 
 ## Why a bridge is needed
 
@@ -145,14 +145,14 @@ with pixel verification, no CPU pixel copy, repeatable resize/rebuild, clean tea
 
 ## Local round-trip probe — 2026-09-16
 
-The first local bridge probe is implemented under `src/x86_x64_bridge_probe/` and driven by `tools/run_x86_x64_bridge_probe.ps1`. It builds a Win32 D3D11 client and an x64 D3D12 host independently, then exercises one shared `64x64 R8G8B8A8_UNORM` texture and one shared GPU fence on the same adapter.
+The first local bridge probe is implemented under `src/x86_x64_bridge_probe/` and driven by `tools/run_x86_x64_bridge_probe.ps1`. It builds a Win32 D3D11 client and an x64 D3D12 host independently, then exercises two sequential shared `R8G8B8A8_UNORM` resource generations on the same adapter with separate unidirectional shared fences.
 
 The working ownership direction is host-created:
 
 ```text
 x64 D3D12 host
   create shared committed texture + NT handle
-  launch x86 client with inherited resource handle
+  launch x86 client with generation-0 inherited resource handle
         |
         v
 x86 D3D11 client
@@ -177,20 +177,20 @@ x86 D3D11 client
 
 **Host-tested:** the original one-frame local run completed with `mismatches=0`, both processes reported `RESULT PASS`, and no pixel payload crossed the process boundary. The only CPU pixel transfer is the D3D11 staging readback used to verify the experiment.
 
-### Multiframe and generation-switch expansion
+### Multiframe and dynamic generation replacement
 
-The probe now runs 12 frames at `64x64`, then 12 frames at `96x72`, with a frame-varying deterministic payload. All 24 transformed frames are read back and verified by the x86 client. The two resource generations are created by the x64 host before the child process starts and are passed as separate inherited handles, so this validates a resource-generation/size transition but **does not yet validate dynamic mid-run handle replacement or rebuild IPC**.
+The probe now runs 12 frames at `64x64`, then 12 frames at `96x72`, with a frame-varying deterministic payload. Only generation 0 exists when the x86 process launches. After frame 12 completes on the D3D12 `done` fence, the x64 host releases its generation-0 resource, creates generation 1, duplicates the new NT handle directly into the already-running x86 process with `DuplicateHandle`, and sends a compact control record through an inherited anonymous pipe. The record carries a magic value, protocol version, generation number, extent and target-process handle value. The x86 producer has already completed validation and releases its generation-0 references before reading that record; it validates the control contract, opens the new resource, creates its new staging texture and resumes with monotonically increasing fence values. This is a true mid-run resource replacement probe, not a pre-created generation switch.
 
-**Host-tested:** five additional positive runs each completed `24` frames, one size transition and `0` mismatches. The per-run mean D3D12 compute interval averaged `3.558 us`, with per-run means ranging `3.499–3.669 us`. The per-run mean x86 signal-to-validation-readback wall time averaged `1.5022 ms`, with per-run means ranging `1.3372–1.6114 ms`; that path includes synchronization, the validation copy and CPU readback and is not a transport-only latency measurement. These remain short single-host controlled measurements and are not `performance-validated`.
+**Host-tested:** the dynamic-replacement probe passed the full positive/negative driver and five additional positive stability runs. Each positive run completed `24` frames, one live `64x64 -> 96x72` replacement and `0` mismatches. Across the five stability runs, the per-run mean D3D12 compute interval averaged `4.0874 us`, with per-run means ranging `3.925–4.352 us`. The per-run mean x86 signal-to-validation-readback wall time averaged `1.9595 ms`, with per-run means ranging `1.6301–2.1445 ms`; that path includes synchronization, the validation copy and CPU readback and is not a transport-only latency measurement. These remain short single-host controlled measurements and are not `performance-validated`.
 
 The multiframe probe also records copy scope explicitly: the x64 D3D12 transform performs zero transport copies because it operates in-place on the shared resource; the x86 test performs one GPU copy to staging per frame solely for deterministic validation. The producer's synthetic `UpdateSubresource` input is test-data upload and is not evidence for the copy count of a future renderer adapter.
 
 **Verified synchronization refinement:** the one-frame probe could alternate `D3D11 Signal -> D3D12 Signal` on one shared fence, but that design failed when reused for multiple frames: the next D3D11 `Signal` returned `E_INVALIDARG`. The passing multiframe design therefore uses two unidirectional fences: a D3D11-created `ready` fence signaled only by x86 and a D3D12-created `done` fence signaled only by x64. D3D11 can open and wait on the D3D12-created fence even though the earlier attempt to signal that fence from D3D11 failed.
 
-**Host-tested negative paths:** protocol-version mismatch is rejected explicitly; a deliberately invalid adapter LUID fails with an adapter diagnostic; a mismatched generation extent is rejected before frame execution; and a host-stall probe detects that the `done` fence does not advance and exits after a controlled `250 ms` timeout rather than hanging indefinitely. Actual host-process termination/device removal and client-loss cleanup are still pending.
+**Host-tested negative paths:** protocol-version mismatch is rejected explicitly; a deliberately invalid adapter LUID fails with an adapter diagnostic; a mismatched generation-0 extent is rejected before frame execution; a host-stall probe detects that the `done` fence does not advance and exits after a controlled `250 ms` timeout; and a malformed dynamic replacement carrying the wrong generation marker is rejected after generation 0 completes. Actual host-process termination/device removal and client-loss cleanup are still pending.
 
 **Verified for this probe:** the x64 host can create a D3D12 committed resource with `D3D12_HEAP_FLAG_SHARED`, `ALLOW_RENDER_TARGET`, `ALLOW_UNORDERED_ACCESS`, and `ALLOW_SIMULTANEOUS_ACCESS`; the x86 D3D11 device on the same adapter can open that NT handle with `OpenSharedResource1`. Shared fences can cross the D3D11/D3D12 boundary, but the multiframe evidence requires the unidirectional ownership/signaling split described above.
 
 **Observed during development:** two alternative paths failed on this host and should not be generalized from this single experiment. A D3D11-created shared texture was openable from D3D12, but the attempted D3D12 write path did not become visible to the D3D11 validation readback. A D3D12-created shared fence was openable from D3D11, but `ID3D11DeviceContext4::Signal` returned `E_INVALIDARG`. The passing probe therefore uses D3D12 ownership for the texture and D3D11 ownership for the fence. These failures are implementation evidence for ownership-direction testing, not proof that the opposite directions are universally unsupported.
 
-The deterministic multiframe transport, one pre-created generation/size transition, first timing/copy accounting and several negative paths are now covered. Dynamic resource rebuild/handle replacement, actual host or client termination, device removal, unsupported-format coverage beyond contract rejection, steady-state backpressure/ring depth, renderer-to-shared-resource copy cost and stereo remain experiment-pending.
+The deterministic multiframe transport, one real mid-run resource replacement, first timing/copy accounting and dynamic-control rejection are now covered. Actual host or client termination, device removal, unsupported-format coverage beyond contract rejection, steady-state backpressure/ring depth, renderer-to-shared-resource copy cost and stereo remain experiment-pending.

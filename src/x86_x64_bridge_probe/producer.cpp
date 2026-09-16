@@ -22,10 +22,10 @@ namespace {
   return false;
 }
 struct Arguments {
-  HANDLE handles[ltr::bridge_probe::kGenerationCount]{};
+  HANDLE resource0_handle{};
   HANDLE done_fence_handle{};
-  ltr::bridge_probe::GenerationSpec
-      specs[ltr::bridge_probe::kGenerationCount]{};
+  HANDLE control_read_handle{};
+  ltr::bridge_probe::GenerationSpec spec0{};
   std::wstring ready_fence_name;
   LUID luid{};
   std::uint32_t protocol = 0;
@@ -49,25 +49,19 @@ struct Arguments {
     const std::wstring_view k(argv[i]);
     const std::wstring v(argv[i + 1]);
     if (k == L"--resource0-handle")
-      a.handles[0] =
-          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
-    else if (k == L"--resource1-handle")
-      a.handles[1] =
+      a.resource0_handle =
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
     else if (k == L"--width0") {
-      if (!u32(v, a.specs[0].width))
+      if (!u32(v, a.spec0.width))
         return false;
     } else if (k == L"--height0") {
-      if (!u32(v, a.specs[0].height))
-        return false;
-    } else if (k == L"--width1") {
-      if (!u32(v, a.specs[1].width))
-        return false;
-    } else if (k == L"--height1") {
-      if (!u32(v, a.specs[1].height))
+      if (!u32(v, a.spec0.height))
         return false;
     } else if (k == L"--done-fence-handle")
       a.done_fence_handle =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--control-read-handle")
+      a.control_read_handle =
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
     else if (k == L"--ready-fence-name")
       a.ready_fence_name = v;
@@ -89,10 +83,9 @@ struct Arguments {
     } else
       return false;
   }
-  return a.handles[0] && a.handles[1] && a.done_fence_handle &&
-         a.specs[0].width && a.specs[0].height && a.specs[1].width &&
-         a.specs[1].height && !a.ready_fence_name.empty() && low && high &&
-         a.frames;
+  return a.resource0_handle && a.done_fence_handle && a.control_read_handle &&
+         a.spec0.width && a.spec0.height && !a.ready_fence_name.empty() &&
+         low && high && a.frames;
 }
 [[nodiscard]] bool contract(ID3D11Texture2D *tex,
                             const ltr::bridge_probe::GenerationSpec &e,
@@ -152,23 +145,26 @@ int wmain(int argc, wchar_t **argv) {
     return 7;
   ComPtr<ID3D11Texture2D> shared[ltr::bridge_probe::kGenerationCount],
       staging[ltr::bridge_probe::kGenerationCount];
-  for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
-    if (!check(
-            dev1->OpenSharedResource1(a.handles[g], IID_PPV_ARGS(&shared[g])),
-            "OpenSharedResource1"))
-      return 8;
-    if (!contract(shared[g].Get(), a.specs[g], g))
-      return 9;
-    D3D11_TEXTURE2D_DESC d{};
-    shared[g]->GetDesc(&d);
-    d.Usage = D3D11_USAGE_STAGING;
-    d.BindFlags = 0;
-    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    d.MiscFlags = 0;
-    if (!check(dev->CreateTexture2D(&d, nullptr, &staging[g]),
-               "CreateTexture2D(staging)"))
-      return 10;
-  }
+  ltr::bridge_probe::GenerationSpec
+      specs[ltr::bridge_probe::kGenerationCount]{};
+  specs[0] = a.spec0;
+  if (!check(dev1->OpenSharedResource1(a.resource0_handle,
+                                       IID_PPV_ARGS(&shared[0])),
+             "OpenSharedResource1(generation0)"))
+    return 8;
+  CloseHandle(a.resource0_handle);
+  a.resource0_handle = nullptr;
+  if (!contract(shared[0].Get(), specs[0], 0))
+    return 9;
+  D3D11_TEXTURE2D_DESC d0{};
+  shared[0]->GetDesc(&d0);
+  d0.Usage = D3D11_USAGE_STAGING;
+  d0.BindFlags = 0;
+  d0.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  d0.MiscFlags = 0;
+  if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[0]),
+             "CreateTexture2D(staging0)"))
+    return 10;
   ComPtr<ID3D11Fence> ready_fence, done_fence;
   if (!check(dev5->CreateFence(
                  0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
@@ -187,6 +183,8 @@ int wmain(int argc, wchar_t **argv) {
     CloseHandle(fh);
     return 12;
   }
+  CloseHandle(a.done_fence_handle);
+  a.done_fence_handle = nullptr;
   if (a.expect_host_stall) {
     if (!check(ctx4->Signal(ready_fence.Get(), 1),
                "Signal(host-stall-ready)")) {
@@ -220,7 +218,63 @@ int wmain(int argc, wchar_t **argv) {
   double sum = 0.0, minv = std::numeric_limits<double>::max(), maxv = 0.0;
   std::uint32_t frame = 0;
   for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
-    const auto spec = a.specs[g];
+    if (g == 1) {
+      staging[0].Reset();
+      shared[0].Reset();
+      ltr::bridge_probe::DynamicResourceMessage message{};
+      DWORD bytes = 0;
+      if (!ReadFile(a.control_read_handle, &message, sizeof(message), &bytes,
+                    nullptr) ||
+          bytes != sizeof(message)) {
+        std::cerr << "reject=dynamic_control_read bytes=" << bytes
+                  << " error=" << GetLastError() << "\n";
+        CloseHandle(fh);
+        return 19;
+      }
+      CloseHandle(a.control_read_handle);
+      a.control_read_handle = nullptr;
+      if (message.magic != ltr::bridge_probe::kControlMagic ||
+          message.protocol != ltr::bridge_probe::kProtocolVersion ||
+          message.generation != g || !message.width || !message.height ||
+          message.resource_handle >
+              static_cast<std::uint64_t>(
+                  std::numeric_limits<std::uintptr_t>::max())) {
+        std::cerr << "reject=dynamic_control_contract magic=" << message.magic
+                  << " protocol=" << message.protocol
+                  << " generation=" << message.generation << "\n";
+        CloseHandle(fh);
+        return 19;
+      }
+      specs[g] = {message.width, message.height};
+      const HANDLE dynamic_handle = reinterpret_cast<HANDLE>(
+          static_cast<std::uintptr_t>(message.resource_handle));
+      if (!check(dev1->OpenSharedResource1(dynamic_handle,
+                                           IID_PPV_ARGS(&shared[g])),
+                 "OpenSharedResource1(dynamic)")) {
+        CloseHandle(dynamic_handle);
+        CloseHandle(fh);
+        return 8;
+      }
+      CloseHandle(dynamic_handle);
+      if (!contract(shared[g].Get(), specs[g], g)) {
+        CloseHandle(fh);
+        return 9;
+      }
+      D3D11_TEXTURE2D_DESC d{};
+      shared[g]->GetDesc(&d);
+      d.Usage = D3D11_USAGE_STAGING;
+      d.BindFlags = 0;
+      d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      d.MiscFlags = 0;
+      if (!check(dev->CreateTexture2D(&d, nullptr, &staging[g]),
+                 "CreateTexture2D(dynamic-staging)")) {
+        CloseHandle(fh);
+        return 10;
+      }
+      std::cout << "dynamic_resource_opened generation=" << g
+                << " size=" << specs[g].width << "x" << specs[g].height << "\n";
+    }
+    const auto spec = specs[g];
     std::vector<std::uint8_t> p(static_cast<std::size_t>(spec.width) *
                                 spec.height * 4U);
     for (std::uint32_t local = 0; local < a.frames; ++local, ++frame) {

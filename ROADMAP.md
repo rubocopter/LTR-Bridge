@@ -47,7 +47,7 @@ Current foundation: the standalone x64 D3D11 harness now provides 1:1 scene colo
 
 ## Phase 2 — D3D11 x86 -> x64 bridge probe
 
-Status: **multiframe transport implemented and host-tested with a controlled size-generation transition, first timing/copy accounting and negative-path diagnostics; dynamic lifecycle/backpressure/stereo expansion pending**.
+Status: **multiframe transport and true mid-run resource replacement implemented and host-tested with first timing/copy accounting and negative-path diagnostics; process/device-loss cleanup, backpressure and stereo expansion pending**.
 
 Goal: validate GPU-resident cross-bitness transport independently of a reconstruction SDK.
 
@@ -63,7 +63,7 @@ Probe shape:
 
 Measure copies, stalls, queue waits, resize, process failure, adapter identity, and cleanup.
 
-Current foundation: the x64 D3D12 host creates two shared resource generations (`64x64` and `96x72`) and launches an x86 D3D11 client on the same adapter. The client runs 12 deterministic frames per generation and validates all 24 transformed frames with zero mismatches. The multiframe path uses separate unidirectional shared fences: D3D11 signals `ready`, D3D12 signals `done`. The x64 transform is in-place (`0` transport GPU copies); one x86 GPU copy per frame exists only for staging/readback validation. Across five additional positive runs, per-run mean D3D12 compute time averaged `3.558 us` (`3.499–3.669 us` between run means) and per-run mean validation signal-to-readback wall time averaged `1.5022 ms` (`1.3372–1.6114 ms` between run means). These remain short single-host/synthetic measurements rather than performance validation. Protocol mismatch, adapter mismatch, resource-contract mismatch and a `250 ms` host-stall timeout are deterministic negative tests. The two size generations are pre-created before launch, so dynamic handle replacement/rebuild, real process/device loss, backpressure and stereo remain pending.
+Current foundation: the x64 D3D12 host launches the x86 D3D11 client with only generation 0 (`64x64`). The client runs 12 deterministic frames, then the host waits for frame 12 on the `done` fence, retires its generation-0 resource, creates generation 1 (`96x72`), duplicates that NT handle into the live x86 process and sends the handle plus generation/extent/protocol metadata over a small anonymous-pipe control record. The x86 process retires generation 0 after its final validation, validates and opens the new handle, then both sides complete another 12 frames with the same monotonic fence timeline. All 24 transformed frames validate with zero mismatches. The multiframe path uses separate unidirectional shared fences: D3D11 signals `ready`, D3D12 signals `done`. The x64 transform is in-place (`0` transport GPU copies); one x86 GPU copy per frame exists only for staging/readback validation. Five additional dynamic-replacement runs passed; per-run mean D3D12 compute time averaged `4.0874 us` (`3.925–4.352 us` between run means) and per-run mean validation signal-to-readback wall time averaged `1.9595 ms` (`1.6301–2.1445 ms` between run means). These remain short single-host/synthetic measurements rather than performance validation. Protocol mismatch, adapter mismatch, resource-contract mismatch, a `250 ms` host-stall timeout and an invalid dynamic generation marker are deterministic negative tests. Real process/device loss, bounded backpressure/ring depth and stereo remain pending.
 
 ## Phase 3 — backend comparison
 

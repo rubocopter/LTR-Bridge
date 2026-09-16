@@ -4,10 +4,22 @@ namespace ltr::bridge_probe {
 inline constexpr std::uint32_t kProtocolVersion = 1;
 inline constexpr std::uint32_t kFramesPerGeneration = 12;
 inline constexpr std::uint32_t kGenerationCount = 2;
+inline constexpr std::uint32_t kControlMagic = 0x4C545242U;
 struct GenerationSpec {
   std::uint32_t width;
   std::uint32_t height;
 };
+#pragma pack(push, 1)
+struct DynamicResourceMessage {
+  std::uint32_t magic;
+  std::uint32_t protocol;
+  std::uint32_t generation;
+  std::uint32_t width;
+  std::uint32_t height;
+  std::uint64_t resource_handle;
+};
+#pragma pack(pop)
+static_assert(sizeof(DynamicResourceMessage) == 28);
 inline constexpr GenerationSpec kGenerations[kGenerationCount] = {{64, 64},
                                                                   {96, 72}};
 [[nodiscard]] inline std::uint64_t ready_fence(std::uint32_t frame) noexcept {
