@@ -40,6 +40,7 @@ struct Arguments {
   std::uint32_t backpressure_depth = 0;
   std::uint32_t stereo_mode = 0;
   std::uint32_t stereo_history_mode = 0;
+  std::uint32_t renderer_copy_mode = 0;
 };
 [[nodiscard]] bool u32(const std::wstring &s, std::uint32_t &out) {
   try {
@@ -116,6 +117,9 @@ struct Arguments {
     } else if (k == L"--stereo-history-mode") {
       if (!u32(v, a.stereo_history_mode) || a.stereo_history_mode > 1U)
         return false;
+    } else if (k == L"--renderer-copy-mode") {
+      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 1U)
+        return false;
     } else
       return false;
   }
@@ -185,7 +189,8 @@ int wmain(int argc, wchar_t **argv) {
       !check(ctx.As(&ctx4), "ID3D11DeviceContext4"))
     return 7;
   ComPtr<ID3D11Texture2D> shared[ltr::bridge_probe::kGenerationCount],
-      staging[ltr::bridge_probe::kGenerationCount];
+      staging[ltr::bridge_probe::kGenerationCount],
+      renderer_source[ltr::bridge_probe::kGenerationCount];
   ltr::bridge_probe::GenerationSpec
       specs[ltr::bridge_probe::kGenerationCount]{};
   specs[0] = a.spec0;
@@ -206,6 +211,18 @@ int wmain(int argc, wchar_t **argv) {
   if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[0]),
              "CreateTexture2D(staging0)"))
     return 10;
+  if (a.renderer_copy_mode) {
+    D3D11_TEXTURE2D_DESC renderer_desc{};
+    shared[0]->GetDesc(&renderer_desc);
+    renderer_desc.Usage = D3D11_USAGE_DEFAULT;
+    renderer_desc.BindFlags = 0;
+    renderer_desc.CPUAccessFlags = 0;
+    renderer_desc.MiscFlags = 0;
+    if (!check(dev->CreateTexture2D(&renderer_desc, nullptr,
+                                    &renderer_source[0]),
+               "CreateTexture2D(renderer-source0)"))
+      return 10;
+  }
   if (a.backpressure_depth == 2U || a.stereo_mode) {
     specs[1] = a.spec0;
     if (!check(dev1->OpenSharedResource1(a.resource1_handle,
@@ -583,6 +600,30 @@ int wmain(int argc, wchar_t **argv) {
   std::uint64_t mismatches = 0;
   double sum = 0.0, minv = std::numeric_limits<double>::max(), maxv = 0.0;
   std::uint32_t frame = 0;
+  const std::uint32_t total = a.frames * ltr::bridge_probe::kGenerationCount;
+  ComPtr<ID3D11Query> copy_disjoint;
+  std::vector<ComPtr<ID3D11Query>> copy_start(total), copy_end(total);
+  if (a.renderer_copy_mode) {
+    D3D11_QUERY_DESC disjoint_desc{};
+    disjoint_desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+    if (!check(dev->CreateQuery(&disjoint_desc, &copy_disjoint),
+               "CreateQuery(renderer-copy-disjoint)")) {
+      CloseHandle(fh);
+      return 27;
+    }
+    D3D11_QUERY_DESC timestamp_desc{};
+    timestamp_desc.Query = D3D11_QUERY_TIMESTAMP;
+    for (std::uint32_t i = 0; i < total; ++i) {
+      if (!check(dev->CreateQuery(&timestamp_desc, &copy_start[i]),
+                 "CreateQuery(renderer-copy-start)") ||
+          !check(dev->CreateQuery(&timestamp_desc, &copy_end[i]),
+                 "CreateQuery(renderer-copy-end)")) {
+        CloseHandle(fh);
+        return 27;
+      }
+    }
+    ctx->Begin(copy_disjoint.Get());
+  }
   for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
     if (g == 1) {
       staging[0].Reset();
@@ -637,6 +678,15 @@ int wmain(int argc, wchar_t **argv) {
         CloseHandle(fh);
         return 10;
       }
+      if (a.renderer_copy_mode) {
+        d.Usage = D3D11_USAGE_DEFAULT;
+        d.CPUAccessFlags = 0;
+        if (!check(dev->CreateTexture2D(&d, nullptr, &renderer_source[g]),
+                   "CreateTexture2D(dynamic-renderer-source)")) {
+          CloseHandle(fh);
+          return 10;
+        }
+      }
       std::cout << "dynamic_resource_opened generation=" << g
                 << " size=" << specs[g].width << "x" << specs[g].height << "\n";
     }
@@ -653,8 +703,16 @@ int wmain(int argc, wchar_t **argv) {
           p[i + 2] = ltr::bridge_probe::source_b(x, y, frame);
           p[i + 3] = 255U;
         }
-      ctx->UpdateSubresource(shared[g].Get(), 0, nullptr, p.data(),
-                             spec.width * 4U, 0);
+      if (a.renderer_copy_mode) {
+        ctx->UpdateSubresource(renderer_source[g].Get(), 0, nullptr, p.data(),
+                               spec.width * 4U, 0);
+        ctx->End(copy_start[frame].Get());
+        ctx->CopyResource(shared[g].Get(), renderer_source[g].Get());
+        ctx->End(copy_end[frame].Get());
+      } else {
+        ctx->UpdateSubresource(shared[g].Get(), 0, nullptr, p.data(),
+                               spec.width * 4U, 0);
+      }
       const auto start = std::chrono::steady_clock::now();
       if (!check(ctx4->Signal(ready_fence.Get(),
                               static_cast<std::uint64_t>(frame) + 1ULL),
@@ -700,9 +758,57 @@ int wmain(int argc, wchar_t **argv) {
       ctx->Unmap(staging[g].Get(), 0);
     }
   }
+  double copy_sum_us = 0.0;
+  double copy_min_us = std::numeric_limits<double>::max();
+  double copy_max_us = 0.0;
+  if (a.renderer_copy_mode) {
+    ctx->End(copy_disjoint.Get());
+    ctx->Flush();
+    const auto wait_query = [&](ID3D11Asynchronous *query, void *data,
+                                UINT size, const char *what) -> bool {
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      for (;;) {
+        const HRESULT hr = ctx->GetData(query, data, size, 0);
+        if (hr == S_OK)
+          return true;
+        if (FAILED(hr))
+          return check(hr, what);
+        if (std::chrono::steady_clock::now() >= deadline) {
+          std::cerr << what << " timed out\n";
+          return false;
+        }
+        Sleep(1);
+      }
+    };
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+    if (!wait_query(copy_disjoint.Get(), &disjoint, sizeof(disjoint),
+                    "GetData(renderer-copy-disjoint)") ||
+        disjoint.Disjoint || disjoint.Frequency == 0) {
+      CloseHandle(fh);
+      std::cerr << "renderer-copy timestamp stream disjoint\n";
+      return 27;
+    }
+    for (std::uint32_t i = 0; i < total; ++i) {
+      std::uint64_t begin = 0, end = 0;
+      if (!wait_query(copy_start[i].Get(), &begin, sizeof(begin),
+                      "GetData(renderer-copy-start)") ||
+          !wait_query(copy_end[i].Get(), &end, sizeof(end),
+                      "GetData(renderer-copy-end)")) {
+        CloseHandle(fh);
+        return 27;
+      }
+      const double us = static_cast<double>(end - begin) * 1000000.0 /
+                        static_cast<double>(disjoint.Frequency);
+      copy_sum_us += us;
+      copy_min_us = std::min(copy_min_us, us);
+      copy_max_us = std::max(copy_max_us, us);
+    }
+  }
   CloseHandle(fh);
-  const std::uint32_t total = a.frames * ltr::bridge_probe::kGenerationCount;
-  std::cout << "producer_bitness=32 transport=open_host_created_d3d12_resource "
+  std::cout << "producer_bitness=32 mode="
+            << (a.renderer_copy_mode ? "renderer-copy" : "multiframe")
+            << " transport=open_host_created_d3d12_resource "
                "synchronization=shared_gpu_fence validation_cpu_readback=1\n"
             << "protocol_version=" << a.protocol
             << " generations=" << ltr::bridge_probe::kGenerationCount
@@ -712,6 +818,13 @@ int wmain(int argc, wchar_t **argv) {
             << std::fixed << std::setprecision(4)
             << "validation_round_trip_mean_ms=" << (sum / total)
             << " min_ms=" << minv << " max_ms=" << maxv << "\n";
+  if (a.renderer_copy_mode) {
+    std::cout << "renderer_to_shared_gpu_copies=" << total
+              << " renderer_to_shared_gpu_copy_mean_us="
+              << (copy_sum_us / static_cast<double>(total))
+              << " min_us=" << copy_min_us << " max_us=" << copy_max_us
+              << "\n";
+  }
   if (mismatches) {
     std::cout << "RESULT FAIL\n";
     return 16;

@@ -52,6 +52,9 @@ if (-not (Test-Path $producer) -or -not (Test-Path $consumer)) {
 Write-Host "=== positive multiframe/generation-size probe ==="
 Invoke-Checked $consumer @("--producer", $producer)
 
+Write-Host "=== renderer-local to shared-resource GPU-copy probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--renderer-copy")
+
 foreach ($negative in @(
     "protocol",
     "adapter",

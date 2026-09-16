@@ -32,6 +32,7 @@ struct Options {
   bool stereo_contamination = false;
   bool stereo_history = false;
   bool stereo_history_swap = false;
+  bool renderer_copy = false;
 };
 [[nodiscard]] bool parse(int argc, wchar_t **argv, Options &o) {
   for (int i = 1; i < argc; ++i) {
@@ -61,12 +62,16 @@ struct Options {
       o.stereo = true;
       o.stereo_history = true;
       o.stereo_history_swap = true;
+    } else if (k == L"--renderer-copy") {
+      o.renderer_copy = true;
     } else
       return false;
   }
   return !o.producer.empty() &&
          (o.negative.empty() || o.backpressure_depth == 0U) &&
-         (!o.stereo || (o.negative.empty() && o.backpressure_depth == 0U));
+         (!o.stereo || (o.negative.empty() && o.backpressure_depth == 0U)) &&
+         (!o.renderer_copy || (o.negative.empty() && o.backpressure_depth == 0U &&
+                               !o.stereo));
 }
 [[nodiscard]] ComPtr<ID3D12Resource> texture(ID3D12Device *d, std::uint32_t w,
                                              std::uint32_t h) {
@@ -110,8 +115,8 @@ int wmain(int argc, wchar_t **argv) {
            "protocol|adapter|resource-contract|host-stall|dynamic-control|"
             "client-termination|device-removal|host-termination|"
             "backpressure-host-termination]"
-           " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
-           "--stereo-history|--stereo-history-swap]\n";
+            " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
+            "--stereo-history|--stereo-history-swap] [--renderer-copy]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -267,7 +272,8 @@ int wmain(int argc, wchar_t **argv) {
       << expect_host_termination << L" --expect-backpressure-host-termination "
       << expect_backpressure_host_termination << L" --backpressure-depth "
       << o.backpressure_depth << L" --stereo-mode " << (o.stereo ? 1U : 0U)
-      << L" --stereo-history-mode " << (o.stereo_history ? 1U : 0U);
+      << L" --stereo-history-mode " << (o.stereo_history ? 1U : 0U)
+      << L" --renderer-copy-mode " << (o.renderer_copy ? 1U : 0U);
   std::wstring line = cmd.str();
   STARTUPINFOW si{};
   si.cb = sizeof(si);
@@ -936,12 +942,16 @@ int wmain(int argc, wchar_t **argv) {
               << " process_wall_ms=" << wall << "\nRESULT PASS\n";
     return 0;
   }
-  std::cout << "consumer_bitness=64 ownership=host_created_d3d12_resource "
+  std::cout << "consumer_bitness=64 mode="
+            << (o.renderer_copy ? "renderer-copy" : "multiframe")
+            << " ownership=host_created_d3d12_resource "
                "transform=d3d12_compute_invert transport_gpu_copies=0\n"
             << "protocol_version=" << ltr::bridge_probe::kProtocolVersion
             << " generations=" << ltr::bridge_probe::kGenerationCount
             << " frames=" << total << " generation_size_transitions="
             << (ltr::bridge_probe::kGenerationCount - 1U)
+            << " renderer_to_shared_gpu_copies="
+            << (o.renderer_copy ? total : 0U)
             << " validation_gpu_copies=" << total << "\n"
             << std::fixed << std::setprecision(3)
             << "host_gpu_compute_mean_us=" << (sum / total)
