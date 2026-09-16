@@ -62,6 +62,34 @@ namespace {
       ltr::bridge_probe::source_g(0, 0, frame),
       ltr::bridge_probe::source_b(0, 0, frame));
 }
+struct D3D9SceneVertex {
+  float x;
+  float y;
+  float z;
+  D3DCOLOR color;
+};
+constexpr DWORD kD3D9SceneFvf = D3DFVF_XYZ | D3DFVF_DIFFUSE;
+constexpr D3D9SceneVertex kD3D9SceneVertices[] = {
+    {-0.70f, -0.60f, 0.40f, D3DCOLOR_XRGB(220, 40, 40)},
+    {-0.20f, 0.60f, 0.40f, D3DCOLOR_XRGB(220, 40, 40)},
+    {0.30f, -0.60f, 0.40f, D3DCOLOR_XRGB(220, 40, 40)},
+    {-0.30f, -0.60f, 0.80f, D3DCOLOR_XRGB(40, 220, 40)},
+    {0.20f, 0.60f, 0.80f, D3DCOLOR_XRGB(40, 220, 40)},
+    {0.70f, -0.60f, 0.80f, D3DCOLOR_XRGB(40, 220, 40)},
+};
+[[nodiscard]] D3DMATRIX d3d9_identity_matrix() noexcept {
+  D3DMATRIX m{};
+  m._11 = 1.0f;
+  m._22 = 1.0f;
+  m._33 = 1.0f;
+  m._44 = 1.0f;
+  return m;
+}
+[[nodiscard]] D3DMATRIX d3d9_scene_world(std::uint32_t frame) noexcept {
+  D3DMATRIX m = d3d9_identity_matrix();
+  m._41 = (frame & 1U) ? 0.03f : -0.03f;
+  return m;
+}
 struct Arguments {
   HANDLE resource0_handle{};
   HANDLE resource1_handle{};
@@ -159,7 +187,7 @@ struct Arguments {
       if (!u32(v, a.stereo_history_mode) || a.stereo_history_mode > 1U)
         return false;
     } else if (k == L"--renderer-copy-mode") {
-      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 4U)
+      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 5U)
         return false;
     } else
       return false;
@@ -288,13 +316,20 @@ int wmain(int argc, wchar_t **argv) {
   ComPtr<IDirect3DSurface9>
       d3d9_renderer_surface[ltr::bridge_probe::kGenerationCount],
       d3d9_relay_surface[ltr::bridge_probe::kGenerationCount];
+  ComPtr<IDirect3DSurface9>
+      d3d9_scene_depth[ltr::bridge_probe::kGenerationCount];
+  ComPtr<IDirect3DVertexBuffer9>
+      d3d9_scene_vertices[ltr::bridge_probe::kGenerationCount];
   HWND d3d9_hwnd = nullptr;
   D3DPRESENT_PARAMETERS d3d9_pp{};
   double d3d9_relay_wall_sum_ms = 0.0;
   std::uint32_t d3d9_device_resets = 0;
+  bool d3d9_scene_bound_rt_observed = false;
+  bool d3d9_scene_depth_observed = false;
+  bool d3d9_scene_transform_observed = false;
   UINT msaa4x_quality_levels = 0;
   if (a.renderer_copy_mode == 2U || a.renderer_copy_mode == 3U ||
-      a.renderer_copy_mode == 4U) {
+      a.renderer_copy_mode == 4U || a.renderer_copy_mode == 5U) {
     const auto vs = compile_shader(kRendererBlitShader, "VSMain", "vs_5_0");
     const auto ps = compile_shader(kRendererBlitShader, "PSMain", "ps_5_0");
     if (!vs || !ps ||
@@ -308,7 +343,7 @@ int wmain(int argc, wchar_t **argv) {
                "CreatePixelShader(renderer-blit)"))
       return 10;
   }
-  if (a.renderer_copy_mode == 4U) {
+  if (a.renderer_copy_mode == 4U || a.renderer_copy_mode == 5U) {
     d3d9_hwnd = create_hidden_window();
     if (!d3d9_hwnd)
       return 10;
@@ -416,7 +451,7 @@ int wmain(int argc, wchar_t **argv) {
                                                &renderer_target[generation]),
                    "CreateRenderTargetView(renderer-msaa4x-source)");
     }
-    if (a.renderer_copy_mode == 4U) {
+    if (a.renderer_copy_mode == 4U || a.renderer_copy_mode == 5U) {
       HANDLE relay_handle = nullptr;
       const auto spec = specs[generation];
       if (!check(d3d9_device->CreateTexture(
@@ -448,6 +483,28 @@ int wmain(int argc, wchar_t **argv) {
                                              &renderer_target[generation]),
                  "CreateRenderTargetView(shared-rgba8)"))
         return false;
+      if (a.renderer_copy_mode == 5U) {
+        if (!check(d3d9_device->CreateDepthStencilSurface(
+                       spec.width, spec.height, D3DFMT_D24S8,
+                       D3DMULTISAMPLE_NONE, 0, TRUE,
+                       &d3d9_scene_depth[generation], nullptr),
+                   "CreateDepthStencilSurface(D3D9Ex scene-depth)") ||
+            !check(d3d9_device->CreateVertexBuffer(
+                       sizeof(kD3D9SceneVertices), 0, kD3D9SceneFvf,
+                       D3DPOOL_DEFAULT, &d3d9_scene_vertices[generation],
+                       nullptr),
+                   "CreateVertexBuffer(D3D9Ex scene-geometry)"))
+          return false;
+        void *mapped = nullptr;
+        if (!check(d3d9_scene_vertices[generation]->Lock(
+                       0, sizeof(kD3D9SceneVertices), &mapped, 0),
+                   "Lock(D3D9Ex scene-geometry)"))
+          return false;
+        std::memcpy(mapped, kD3D9SceneVertices, sizeof(kD3D9SceneVertices));
+        if (!check(d3d9_scene_vertices[generation]->Unlock(),
+                   "Unlock(D3D9Ex scene-geometry)"))
+          return false;
+      }
       D3D11_TEXTURE2D_DESC relay_desc{};
       renderer_source[generation]->GetDesc(&relay_desc);
       std::cout << "d3d9ex_relay_opened generation=" << generation
@@ -902,9 +959,11 @@ int wmain(int argc, wchar_t **argv) {
       renderer_source[0].Reset();
       d3d9_relay_surface[0].Reset();
       d3d9_renderer_surface[0].Reset();
+      d3d9_scene_depth[0].Reset();
+      d3d9_scene_vertices[0].Reset();
       d3d9_relay[0].Reset();
       d3d9_renderer_target[0].Reset();
-      if (a.renderer_copy_mode == 4U) {
+      if (a.renderer_copy_mode == 4U || a.renderer_copy_mode == 5U) {
         d3d9_default_render_target.Reset();
         d3d9_pp.BackBufferWidth += 8U;
         d3d9_pp.BackBufferHeight += 8U;
@@ -1049,6 +1108,91 @@ int wmain(int argc, wchar_t **argv) {
         ctx->End(copy_start[frame].Get());
         draw_renderer_blit(g);
         ctx->End(copy_end[frame].Get());
+      } else if (a.renderer_copy_mode == 5U) {
+        const auto relay_start = std::chrono::steady_clock::now();
+        const auto world = d3d9_scene_world(frame);
+        const auto identity = d3d9_identity_matrix();
+        D3DVIEWPORT9 viewport{0, 0, spec.width, spec.height, 0.0f, 1.0f};
+        if (!check(d3d9_device->SetRenderTarget(
+                       0, d3d9_renderer_surface[g].Get()),
+                   "SetRenderTarget(D3D9Ex scene-color)") ||
+            !check(d3d9_device->SetDepthStencilSurface(
+                       d3d9_scene_depth[g].Get()),
+                   "SetDepthStencilSurface(D3D9Ex scene-depth)") ||
+            !check(d3d9_device->SetTransform(D3DTS_WORLD, &world),
+                   "SetTransform(D3D9Ex scene-world)") ||
+            !check(d3d9_device->SetTransform(D3DTS_VIEW, &identity),
+                   "SetTransform(D3D9Ex scene-view)") ||
+            !check(d3d9_device->SetTransform(D3DTS_PROJECTION, &identity),
+                   "SetTransform(D3D9Ex scene-projection)") ||
+            !check(d3d9_device->SetViewport(&viewport),
+                   "SetViewport(D3D9Ex scene)") ||
+            !check(d3d9_device->SetRenderState(D3DRS_LIGHTING, FALSE),
+                   "SetRenderState(D3D9Ex scene-lighting)") ||
+            !check(d3d9_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE),
+                   "SetRenderState(D3D9Ex scene-cull)") ||
+            !check(d3d9_device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE),
+                   "SetRenderState(D3D9Ex scene-z)") ||
+            !check(d3d9_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE),
+                   "SetRenderState(D3D9Ex scene-zwrite)") ||
+            !check(d3d9_device->SetFVF(kD3D9SceneFvf),
+                   "SetFVF(D3D9Ex scene)") ||
+            !check(d3d9_device->SetStreamSource(
+                       0, d3d9_scene_vertices[g].Get(), 0,
+                       sizeof(D3D9SceneVertex)),
+                   "SetStreamSource(D3D9Ex scene)") ||
+            !check(d3d9_device->Clear(
+                       0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+                       D3DCOLOR_XRGB(20, 40, 120), 1.0f, 0),
+                   "Clear(D3D9Ex scene)") ||
+            !check(d3d9_device->BeginScene(), "BeginScene(D3D9Ex scene)") ||
+            !check(d3d9_device->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1),
+                   "DrawPrimitive(D3D9Ex red-near)") ||
+            !check(d3d9_device->DrawPrimitive(D3DPT_TRIANGLELIST, 3, 1),
+                   "DrawPrimitive(D3D9Ex green-far)") ||
+            !check(d3d9_device->EndScene(), "EndScene(D3D9Ex scene)")) {
+          CloseHandle(fh);
+          return 28;
+        }
+        ComPtr<IDirect3DSurface9> current_rt, current_depth;
+        D3DMATRIX observed_world{};
+        if (!check(d3d9_device->GetRenderTarget(0, &current_rt),
+                   "GetRenderTarget(D3D9Ex scene-capture)") ||
+            !check(d3d9_device->GetDepthStencilSurface(&current_depth),
+                   "GetDepthStencilSurface(D3D9Ex scene-capture)") ||
+            !check(d3d9_device->GetTransform(D3DTS_WORLD, &observed_world),
+                   "GetTransform(D3D9Ex scene-capture)")) {
+          CloseHandle(fh);
+          return 28;
+        }
+        d3d9_scene_bound_rt_observed =
+            current_rt.Get() == d3d9_renderer_surface[g].Get();
+        d3d9_scene_depth_observed =
+            current_depth.Get() == d3d9_scene_depth[g].Get();
+        d3d9_scene_transform_observed =
+            std::abs(observed_world._41 - world._41) < 0.0001f;
+        if (!d3d9_scene_bound_rt_observed || !d3d9_scene_depth_observed ||
+            !d3d9_scene_transform_observed ||
+            !check(d3d9_device->StretchRect(
+                       current_rt.Get(), nullptr, d3d9_relay_surface[g].Get(),
+                       nullptr, D3DTEXF_NONE),
+                   "StretchRect(D3D9Ex bound-scene-rt->relay)") ||
+            !wait_d3d9_event(d3d9_device.Get()) ||
+            !check(d3d9_device->SetRenderTarget(
+                       0, d3d9_default_render_target.Get()),
+                   "SetRenderTarget(D3D9Ex default-after-scene)") ||
+            !check(d3d9_device->SetDepthStencilSurface(nullptr),
+                   "SetDepthStencilSurface(D3D9Ex null-after-scene)")) {
+          CloseHandle(fh);
+          return 28;
+        }
+        d3d9_relay_wall_sum_ms +=
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - relay_start)
+                .count();
+        ctx->End(copy_start[frame].Get());
+        draw_renderer_blit(g);
+        ctx->End(copy_end[frame].Get());
       } else {
         ctx->UpdateSubresource(shared[g].Get(), 0, nullptr, p.data(),
                                spec.width * 4U, 0);
@@ -1080,7 +1224,37 @@ int wmain(int argc, wchar_t **argv) {
       sum += ms;
       minv = std::min(minv, ms);
       maxv = std::max(maxv, ms);
-      for (std::uint32_t y = 0; y < spec.height; ++y) {
+      if (a.renderer_copy_mode == 5U) {
+        const auto close8 = [](std::uint8_t actual, std::uint8_t expected) {
+          const int delta = static_cast<int>(actual) -
+                            static_cast<int>(expected);
+          return delta >= -2 && delta <= 2;
+        };
+        const auto sample = [&](float ndc_x, float ndc_y, std::uint8_t er,
+                                std::uint8_t eg, std::uint8_t eb) {
+          const float fx =
+              (ndc_x * 0.5f + 0.5f) * static_cast<float>(spec.width);
+          const float fy =
+              (-ndc_y * 0.5f + 0.5f) * static_cast<float>(spec.height);
+          const auto x = std::min(spec.width - 1U,
+                                  static_cast<std::uint32_t>(std::max(0.0f, fx)));
+          const auto y = std::min(spec.height - 1U,
+                                  static_cast<std::uint32_t>(std::max(0.0f, fy)));
+          const auto *row = static_cast<const std::uint8_t *>(m.pData) +
+                            static_cast<std::size_t>(y) * m.RowPitch;
+          const auto *q = row + static_cast<std::size_t>(x) * 4U;
+          return close8(q[0], er) && close8(q[1], eg) && close8(q[2], eb) &&
+                 q[3] == 255U;
+        };
+        if (!sample(-0.85f, 0.80f, 235, 215, 135))
+          ++mismatches;
+        if (!sample(-0.25f, 0.0f, 35, 215, 215))
+          ++mismatches;
+        if (!sample(0.0f, 0.0f, 35, 215, 215))
+          ++mismatches;
+        if (!sample(0.25f, 0.0f, 215, 35, 215))
+          ++mismatches;
+      } else for (std::uint32_t y = 0; y < spec.height; ++y) {
         const auto *row = static_cast<const std::uint8_t *>(m.pData) +
                           static_cast<std::size_t>(y) * m.RowPitch;
         for (std::uint32_t x = 0; x < spec.width; ++x) {
@@ -1185,6 +1359,10 @@ int wmain(int argc, wchar_t **argv) {
     mode_name = "d3d9ex-relay";
     transfer_kind = "D3D9Ex-RT-StretchRect+fullscreen-shader";
     source_format = "D3D9Ex-A2B10G10R10/R10G10B10A2_UNORM";
+  } else if (a.renderer_copy_mode == 5U) {
+    mode_name = "d3d9ex-scene-relay";
+    transfer_kind = "D3D9Ex-scene-bound-RT-StretchRect+fullscreen-shader";
+    source_format = "D3D9Ex-engine-A2B10G10R10/R10G10B10A2_UNORM";
   }
   std::cout << "producer_bitness=32 mode=" << mode_name
             << " transport=open_host_created_d3d12_resource "
@@ -1212,13 +1390,26 @@ int wmain(int argc, wchar_t **argv) {
                 << (generation_copy_sum_us[g] / static_cast<double>(a.frames))
                 << "\n";
   }
-  if (a.renderer_copy_mode == 4U) {
-    std::cout << "d3d9ex_renderer_to_relay_transfers=" << total
-              << " d3d9ex_renderer_to_relay_cpu_wall_mean_ms="
+  if (a.renderer_copy_mode == 4U || a.renderer_copy_mode == 5U) {
+    std::cout << "d3d9ex_renderer_to_relay_transfers=" << total << " "
+              << (a.renderer_copy_mode == 5U
+                      ? "d3d9ex_scene_draw_capture_cpu_wall_mean_ms="
+                      : "d3d9ex_renderer_to_relay_cpu_wall_mean_ms=")
               << (d3d9_relay_wall_sum_ms / static_cast<double>(total))
               << " d3d9ex_device_resets=" << d3d9_device_resets
-              << " renderer_source=bound_render_target_clear"
-              << " validation_tolerance=rgb8_plus_minus_1_lsb\n";
+              << " renderer_source="
+              << (a.renderer_copy_mode == 5U ? "engine_scene_draws"
+                                             : "bound_render_target_clear")
+              << " validation_tolerance=rgb8_plus_minus_"
+              << (a.renderer_copy_mode == 5U ? 2 : 1) << "_lsb";
+    if (a.renderer_copy_mode == 5U)
+      std::cout << " engine_rt_bound_during_capture="
+                << d3d9_scene_bound_rt_observed
+                << " engine_depth_bound_during_capture="
+                << d3d9_scene_depth_observed
+                << " world_transform_visible=" << d3d9_scene_transform_observed
+                << " depth_occlusion_validated=" << (mismatches == 0);
+    std::cout << "\n";
   }
   if (d3d9_hwnd)
     DestroyWindow(d3d9_hwnd);

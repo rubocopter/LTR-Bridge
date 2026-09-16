@@ -93,6 +93,11 @@ struct Options {
         return false;
       o.renderer_copy_mode = 4U;
       o.renderer_profile = L"d3d9ex-r10-relay-highres";
+    } else if (k == L"--d3d9ex-scene-relay") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 5U;
+      o.renderer_profile = L"d3d9ex-scene-relay";
     } else
       return false;
   }
@@ -150,7 +155,7 @@ int wmain(int argc, wchar_t **argv) {
            "--stereo-history|--stereo-history-swap] [--renderer-copy|"
            "--renderer-copy-highres|--renderer-resolve-msaa4x|"
            "--renderer-convert-r10|--d3d9ex-relay|"
-           "--d3d9ex-relay-highres]\n";
+           "--d3d9ex-relay-highres|--d3d9ex-scene-relay]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -180,6 +185,9 @@ int wmain(int argc, wchar_t **argv) {
   } else if (o.renderer_profile == L"d3d9ex-r10-relay-highres") {
     specs[0] = {1920, 1080};
     specs[1] = {2560, 1440};
+  } else if (o.renderer_profile == L"d3d9ex-scene-relay") {
+    specs[0] = {640, 360};
+    specs[1] = {1280, 720};
   }
   ComPtr<ID3D12Resource> res[ltr::bridge_probe::kGenerationCount];
   HANDLE rh[ltr::bridge_probe::kGenerationCount]{};
@@ -1015,6 +1023,9 @@ int wmain(int argc, wchar_t **argv) {
                     ? "d3d9ex-relay-highres"
                     : "d3d9ex-relay";
     transfer_kind = "d3d9ex-r10-relay-shader";
+  } else if (o.renderer_copy_mode == 5U) {
+    mode_name = "d3d9ex-scene-relay";
+    transfer_kind = "d3d9ex-scene-bound-rt-relay-shader";
   }
   std::cout << "consumer_bitness=64 mode=" << mode_name
             << " ownership=host_created_d3d12_resource "

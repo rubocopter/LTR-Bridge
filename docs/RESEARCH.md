@@ -115,6 +115,8 @@ Potential cost: the translation layer can hide or transform original D3D9 state 
 
 **Implemented/host-tested architectural implication:** on this host the native D3D9Ex route reaches the existing modern transport end to end: bound local D3D9Ex R10 render target -> clear/restore -> `StretchRect` -> shared R10 relay -> private x86 D3D11 fullscreen conversion -> host-created shared RGBA8 transport -> x64 D3D12 consumer. Five dedicated 24-frame repetitions pass at `64x64 -> 96x72` and five more at `1920x1080 -> 2560x1440`; every run survives one `ResetEx`/generation transition with zero mismatches. R10 validation allows `rgb8_plus_minus_1_lsb` to account for D3D9 render-target quantization. At high resolution, the D3D9Ex bind/clear/restore/relay/event interval averaged about `0.3637 ms` across run means and the D3D11 relay-to-RGBA8 shader interval about `19.5638 us`. These controlled single-host synthetic measurements are not performance validation. Classic D3D9 still requires another transport or a translation route unless a different OS/driver target proves otherwise.
 
+**Implemented/host-tested controlled-scene implication:** a separate x86 D3D9Ex scene probe now owns default-pool geometry, R10 color and D24S8 depth resources and uses fixed-function world/view/projection state plus two overlapping depth-tested draw calls. The capture occurs while the engine color/depth resources remain bound; the probe confirms the current render target, current depth surface and per-frame world transform before `StretchRect`, then validates depth occlusion after D3D11 readback. Five `640x360 -> 1280x720` reset/recreation runs pass with zero mismatches. The same scene reaches the existing x64 bridge in a dedicated mode, with five more 24-frame zero-mismatch runs. This closes a controlled resource/state hazard, but it is still not evidence from an external executable or game hook.
+
 ## D3D8 routes
 
 **Verified ecosystem path:** ReShade's current setup detects D3D8 imports and instructs the user to install `crosire/d3d8to9`, which translates D3D8 calls and shader bytecode into D3D9. The project is BSD-2-Clause and explicitly describes itself as an exact D3D8 -> D3D9 translation layer, while warning that behavior can still differ from native D3D8 on modern Windows/drivers.
@@ -201,7 +203,7 @@ The central unresolved problem remains temporal-data quality in real engines. Re
 
 ## Immediate research gaps
 
-1. Intercept a controlled real D3D9Ex scene/game path and exercise engine-owned render-target hazards, scheduling, reset behavior and depth/transform visibility through the proven relay.
+1. Put the proven scene capture behind an actual interception boundary around a separate D3D9Ex executable/game and verify call ordering/state preservation without direct control of the renderer.
 2. Compare that native D3D9Ex route with dgVoodoo2 on the same controlled target.
 3. Reproduce the D3D10 -> private D3D11 relay locally and measure its synchronization/copy behavior.
 4. Continue backend comparison from XeSS Native AA with DLSS/DLAA, FidelityFX and XeSS SR while preserving backend-specific optional inputs.
