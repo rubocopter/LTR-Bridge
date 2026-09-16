@@ -83,6 +83,11 @@ struct Options {
         return false;
       o.renderer_copy_mode = 3U;
       o.renderer_profile = L"r10-to-rgba8";
+    } else if (k == L"--d3d9ex-relay") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 4U;
+      o.renderer_profile = L"d3d9ex-r10-relay";
     } else
       return false;
   }
@@ -139,7 +144,7 @@ int wmain(int argc, wchar_t **argv) {
            " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
            "--stereo-history|--stereo-history-swap] [--renderer-copy|"
            "--renderer-copy-highres|--renderer-resolve-msaa4x|"
-           "--renderer-convert-r10]\n";
+           "--renderer-convert-r10|--d3d9ex-relay]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -996,6 +1001,9 @@ int wmain(int argc, wchar_t **argv) {
   } else if (o.renderer_copy_mode == 3U) {
     mode_name = "renderer-convert";
     transfer_kind = "shader-r10-to-rgba8";
+  } else if (o.renderer_copy_mode == 4U) {
+    mode_name = "d3d9ex-relay";
+    transfer_kind = "d3d9ex-r10-relay-shader";
   }
   std::cout << "consumer_bitness=64 mode=" << mode_name
             << " ownership=host_created_d3d12_resource "

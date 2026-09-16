@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <d3d11_4.h>
+#include <d3d9.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
 #include <iomanip>
@@ -22,6 +23,44 @@ namespace {
   std::cerr << what << " failed hr=0x" << std::hex
             << static_cast<unsigned long>(hr) << std::dec << "\n";
   return false;
+}
+[[nodiscard]] HWND create_hidden_window() {
+  const wchar_t *class_name = L"LTRBridgeD3D9ExRelayWindow";
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.lpszClassName = class_name;
+  if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+    return nullptr;
+  return CreateWindowExW(0, class_name, L"LTR Bridge D3D9Ex relay",
+                         WS_OVERLAPPED, 0, 0, 32, 32, nullptr, nullptr,
+                         wc.hInstance, nullptr);
+}
+[[nodiscard]] bool wait_d3d9_event(IDirect3DDevice9 *device) {
+  ComPtr<IDirect3DQuery9> query;
+  if (!check(device->CreateQuery(D3DQUERYTYPE_EVENT, &query),
+             "CreateQuery(D3D9Ex relay event)") ||
+      !check(query->Issue(D3DISSUE_END), "Issue(D3D9Ex relay event)"))
+    return false;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < deadline) {
+    const HRESULT hr = query->GetData(nullptr, 0, D3DGETDATA_FLUSH);
+    if (hr == S_OK)
+      return true;
+    if (FAILED(hr))
+      return check(hr, "GetData(D3D9Ex relay event)");
+    Sleep(0);
+  }
+  std::cerr << "GetData(D3D9Ex relay event) timed out\n";
+  return false;
+}
+[[nodiscard]] D3DCOLOR relay_frame_color(std::uint32_t frame) noexcept {
+  return D3DCOLOR_ARGB(
+      255U, ltr::bridge_probe::source_r(0, 0, frame),
+      ltr::bridge_probe::source_g(0, 0, frame),
+      ltr::bridge_probe::source_b(0, 0, frame));
 }
 struct Arguments {
   HANDLE resource0_handle{};
@@ -120,7 +159,7 @@ struct Arguments {
       if (!u32(v, a.stereo_history_mode) || a.stereo_history_mode > 1U)
         return false;
     } else if (k == L"--renderer-copy-mode") {
-      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 3U)
+      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 4U)
         return false;
     } else
       return false;
@@ -240,8 +279,21 @@ int wmain(int argc, wchar_t **argv) {
       renderer_target[ltr::bridge_probe::kGenerationCount];
   ComPtr<ID3D11VertexShader> renderer_vs;
   ComPtr<ID3D11PixelShader> renderer_ps;
+  ComPtr<IDirect3D9Ex> d3d9ex;
+  ComPtr<IDirect3DDevice9Ex> d3d9_device;
+  ComPtr<IDirect3DTexture9>
+      d3d9_renderer_target[ltr::bridge_probe::kGenerationCount],
+      d3d9_relay[ltr::bridge_probe::kGenerationCount];
+  ComPtr<IDirect3DSurface9>
+      d3d9_renderer_surface[ltr::bridge_probe::kGenerationCount],
+      d3d9_relay_surface[ltr::bridge_probe::kGenerationCount];
+  HWND d3d9_hwnd = nullptr;
+  D3DPRESENT_PARAMETERS d3d9_pp{};
+  double d3d9_relay_wall_sum_ms = 0.0;
+  std::uint32_t d3d9_device_resets = 0;
   UINT msaa4x_quality_levels = 0;
-  if (a.renderer_copy_mode == 2U || a.renderer_copy_mode == 3U) {
+  if (a.renderer_copy_mode == 2U || a.renderer_copy_mode == 3U ||
+      a.renderer_copy_mode == 4U) {
     const auto vs = compile_shader(kRendererBlitShader, "VSMain", "vs_5_0");
     const auto ps = compile_shader(kRendererBlitShader, "PSMain", "ps_5_0");
     if (!vs || !ps ||
@@ -254,6 +306,44 @@ int wmain(int argc, wchar_t **argv) {
                                       &renderer_ps),
                "CreatePixelShader(renderer-blit)"))
       return 10;
+  }
+  if (a.renderer_copy_mode == 4U) {
+    d3d9_hwnd = create_hidden_window();
+    if (!d3d9_hwnd)
+      return 10;
+    if (!check(Direct3DCreate9Ex(D3D_SDK_VERSION, &d3d9ex),
+               "Direct3DCreate9Ex(renderer-relay)"))
+      return 10;
+    LUID d3d9_luid{};
+    if (!check(d3d9ex->GetAdapterLUID(D3DADAPTER_DEFAULT, &d3d9_luid),
+               "IDirect3D9Ex::GetAdapterLUID") ||
+        d3d9_luid.LowPart != a.luid.LowPart ||
+        d3d9_luid.HighPart != a.luid.HighPart) {
+      std::cerr << "reject=d3d9ex_adapter_luid expected_low=" << a.luid.LowPart
+                << " expected_high=" << a.luid.HighPart
+                << " actual_low=" << d3d9_luid.LowPart
+                << " actual_high=" << d3d9_luid.HighPart << "\n";
+      return 10;
+    }
+    d3d9_pp.Windowed = TRUE;
+    d3d9_pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    d3d9_pp.hDeviceWindow = d3d9_hwnd;
+    d3d9_pp.BackBufferFormat = D3DFMT_UNKNOWN;
+    d3d9_pp.BackBufferWidth = 32;
+    d3d9_pp.BackBufferHeight = 32;
+    d3d9_pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    HRESULT d3d9_hr = d3d9ex->CreateDeviceEx(
+        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3d9_hwnd,
+        D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3d9_pp,
+        nullptr, &d3d9_device);
+    if (FAILED(d3d9_hr))
+      d3d9_hr = d3d9ex->CreateDeviceEx(
+          D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3d9_hwnd,
+          D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED,
+          &d3d9_pp, nullptr, &d3d9_device);
+    if (!check(d3d9_hr, "IDirect3D9Ex::CreateDeviceEx(renderer-relay)"))
+      return 10;
+    std::cout << "d3d9ex_relay_adapter_luid_match=1\n";
   }
   if (a.renderer_copy_mode == 2U) {
     if (!check(dev->CheckMultisampleQualityLevels(
@@ -321,6 +411,47 @@ int wmain(int argc, wchar_t **argv) {
                                                nullptr,
                                                &renderer_target[generation]),
                    "CreateRenderTargetView(renderer-msaa4x-source)");
+    }
+    if (a.renderer_copy_mode == 4U) {
+      HANDLE relay_handle = nullptr;
+      const auto spec = specs[generation];
+      if (!check(d3d9_device->CreateTexture(
+                     spec.width, spec.height, 1, D3DUSAGE_RENDERTARGET,
+                     D3DFMT_A2B10G10R10, D3DPOOL_DEFAULT,
+                     &d3d9_renderer_target[generation], nullptr),
+                 "CreateTexture(D3D9Ex renderer-target)") ||
+          !check(d3d9_device->CreateTexture(
+                     spec.width, spec.height, 1, 0, D3DFMT_A2B10G10R10,
+                     D3DPOOL_DEFAULT, &d3d9_relay[generation], &relay_handle),
+                 "CreateTexture(D3D9Ex shared relay)") ||
+          !relay_handle ||
+          !check(d3d9_renderer_target[generation]->GetSurfaceLevel(
+                     0, &d3d9_renderer_surface[generation]),
+                 "GetSurfaceLevel(D3D9Ex renderer-target)") ||
+          !check(d3d9_relay[generation]->GetSurfaceLevel(
+                     0, &d3d9_relay_surface[generation]),
+                 "GetSurfaceLevel(D3D9Ex relay)") ||
+          !check(dev->OpenSharedResource(
+                     relay_handle, __uuidof(ID3D11Texture2D),
+                     reinterpret_cast<void **>(
+                         renderer_source[generation].GetAddressOf())),
+                 "OpenSharedResource(D3D9Ex relay)") ||
+          !check(dev->CreateShaderResourceView(renderer_source[generation].Get(),
+                                               nullptr,
+                                               &renderer_input[generation]),
+                 "CreateShaderResourceView(D3D9Ex relay)") ||
+          !check(dev->CreateRenderTargetView(shared[generation].Get(), nullptr,
+                                             &renderer_target[generation]),
+                 "CreateRenderTargetView(shared-rgba8)"))
+        return false;
+      D3D11_TEXTURE2D_DESC relay_desc{};
+      renderer_source[generation]->GetDesc(&relay_desc);
+      std::cout << "d3d9ex_relay_opened generation=" << generation
+                << " size=" << spec.width << "x" << spec.height
+                << " dxgi_format=" << static_cast<unsigned>(relay_desc.Format)
+                << " bind_flags=0x" << std::hex << relay_desc.BindFlags
+                << std::dec << "\n";
+      return relay_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM;
     }
     renderer_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
     renderer_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -765,6 +896,24 @@ int wmain(int argc, wchar_t **argv) {
       renderer_input[0].Reset();
       renderer_upload[0].Reset();
       renderer_source[0].Reset();
+      d3d9_relay_surface[0].Reset();
+      d3d9_renderer_surface[0].Reset();
+      d3d9_relay[0].Reset();
+      d3d9_renderer_target[0].Reset();
+      if (a.renderer_copy_mode == 4U) {
+        d3d9_pp.BackBufferWidth += 8U;
+        d3d9_pp.BackBufferHeight += 8U;
+        const HRESULT reset_hr = d3d9_device->ResetEx(&d3d9_pp, nullptr);
+        std::cout << "d3d9ex_relay_reset_hr=0x" << std::hex
+                  << static_cast<unsigned long>(reset_hr) << std::dec
+                  << " backbuffer=" << d3d9_pp.BackBufferWidth << "x"
+                  << d3d9_pp.BackBufferHeight << "\n";
+        if (!check(reset_hr, "IDirect3DDevice9Ex::ResetEx(renderer-relay)")) {
+          CloseHandle(fh);
+          return 10;
+        }
+        ++d3d9_device_resets;
+      }
       staging[0].Reset();
       shared[0].Reset();
       ltr::bridge_probe::DynamicResourceMessage message{};
@@ -863,6 +1012,26 @@ int wmain(int argc, wchar_t **argv) {
         ctx->End(copy_start[frame].Get());
         draw_renderer_blit(g);
         ctx->End(copy_end[frame].Get());
+      } else if (a.renderer_copy_mode == 4U) {
+        const auto relay_start = std::chrono::steady_clock::now();
+        if (!check(d3d9_device->ColorFill(d3d9_renderer_surface[g].Get(), nullptr,
+                                          relay_frame_color(frame)),
+                   "ColorFill(D3D9Ex renderer-target)") ||
+            !check(d3d9_device->StretchRect(
+                       d3d9_renderer_surface[g].Get(), nullptr,
+                       d3d9_relay_surface[g].Get(), nullptr, D3DTEXF_NONE),
+                   "StretchRect(D3D9Ex renderer-target->relay)") ||
+            !wait_d3d9_event(d3d9_device.Get())) {
+          CloseHandle(fh);
+          return 28;
+        }
+        d3d9_relay_wall_sum_ms +=
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - relay_start)
+                .count();
+        ctx->End(copy_start[frame].Get());
+        draw_renderer_blit(g);
+        ctx->End(copy_end[frame].Get());
       } else {
         ctx->UpdateSubresource(shared[g].Get(), 0, nullptr, p.data(),
                                spec.width * 4U, 0);
@@ -900,12 +1069,30 @@ int wmain(int argc, wchar_t **argv) {
         for (std::uint32_t x = 0; x < spec.width; ++x) {
           const auto *q = row + static_cast<std::size_t>(x) * 4U;
           const auto er = static_cast<std::uint8_t>(
-                         255U - ltr::bridge_probe::source_r(x, y, frame)),
+                         255U - ltr::bridge_probe::source_r(
+                                    a.renderer_copy_mode == 4U ? 0U : x,
+                                    a.renderer_copy_mode == 4U ? 0U : y,
+                                    frame)),
                      eg = static_cast<std::uint8_t>(
-                         255U - ltr::bridge_probe::source_g(x, y, frame)),
+                         255U - ltr::bridge_probe::source_g(
+                                    a.renderer_copy_mode == 4U ? 0U : x,
+                                    a.renderer_copy_mode == 4U ? 0U : y,
+                                    frame)),
                      eb = static_cast<std::uint8_t>(
-                         255U - ltr::bridge_probe::source_b(x, y, frame));
-          if (q[0] != er || q[1] != eg || q[2] != eb || q[3] != 255U)
+                         255U - ltr::bridge_probe::source_b(
+                                    a.renderer_copy_mode == 4U ? 0U : x,
+                                    a.renderer_copy_mode == 4U ? 0U : y,
+                                    frame));
+          const auto close8 = [](std::uint8_t actual, std::uint8_t expected) {
+            const int delta = static_cast<int>(actual) -
+                              static_cast<int>(expected);
+            return delta >= -1 && delta <= 1;
+          };
+          const bool rgb_ok = a.renderer_copy_mode == 4U
+                                  ? close8(q[0], er) && close8(q[1], eg) &&
+                                        close8(q[2], eb)
+                                  : q[0] == er && q[1] == eg && q[2] == eb;
+          if (!rgb_ok || q[3] != 255U)
             ++mismatches;
         }
       }
@@ -977,6 +1164,10 @@ int wmain(int argc, wchar_t **argv) {
     mode_name = "renderer-convert";
     transfer_kind = "fullscreen-shader";
     source_format = "R10G10B10A2_UNORM";
+  } else if (a.renderer_copy_mode == 4U) {
+    mode_name = "d3d9ex-relay";
+    transfer_kind = "D3D9Ex-RT-StretchRect+fullscreen-shader";
+    source_format = "D3D9Ex-A2B10G10R10/R10G10B10A2_UNORM";
   }
   std::cout << "producer_bitness=32 mode=" << mode_name
             << " transport=open_host_created_d3d12_resource "
@@ -1004,6 +1195,15 @@ int wmain(int argc, wchar_t **argv) {
                 << (generation_copy_sum_us[g] / static_cast<double>(a.frames))
                 << "\n";
   }
+  if (a.renderer_copy_mode == 4U) {
+    std::cout << "d3d9ex_renderer_to_relay_transfers=" << total
+              << " d3d9ex_renderer_to_relay_cpu_wall_mean_ms="
+              << (d3d9_relay_wall_sum_ms / static_cast<double>(total))
+              << " d3d9ex_device_resets=" << d3d9_device_resets
+              << " validation_tolerance=rgb8_plus_minus_1_lsb\n";
+  }
+  if (d3d9_hwnd)
+    DestroyWindow(d3d9_hwnd);
   if (mismatches) {
     std::cout << "RESULT FAIL\n";
     return 16;

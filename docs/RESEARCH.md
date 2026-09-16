@@ -111,9 +111,9 @@ Potential cost: the translation layer can hide or transform original D3D9 state 
 
 **Verified documentation conflict/qualification:** Microsoft's broader cross-API surface-sharing overview says unsynchronized surface sharing is supported by D3D9Ex and that D3D9c/older runtimes do not support shared surfaces. The two primary pages therefore cannot safely be collapsed into the claim that every D3D9 game can share directly with D3D11.
 
-**Implemented/host-tested:** the minimal Win32 probe now separates classic D3D9 from D3D9Ex on the current NVIDIA host. Classic `IDirect3D9` returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` into D3D11, with `SRV|RTV` bind flags, explicit D3D9 event-query completion, one `64x64 -> 96x72` recreation and zero mismatches over 12 frames. Five repeated runs reproduced the same boundary. The documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails on this host, while an `A8R8G8B8 -> B8G8R8A8_UNORM` control outside the documented list succeeds; that control is host/driver evidence only.
+**Implemented/host-tested:** the minimal Win32 probe separates classic D3D9 from D3D9Ex on the current NVIDIA host. Classic `IDirect3D9` returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` into D3D11 with `SRV|RTV` bind flags. The producer now starts from a real local D3D9Ex render target, uses `StretchRect` into the shared relay, waits for D3D9 event-query completion, executes one `ResetEx`, recreates `64x64 -> 96x72`, and validates 12 frames with zero mismatches. Five repeated runs reproduced the same boundary. The documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails on this host, while an `A8R8G8B8 -> B8G8R8A8_UNORM` control outside the documented list succeeds; that control is host/driver evidence only.
 
-**Current architectural implication:** on this host the native relay candidate is specifically D3D9Ex -> purpose-built shared texture -> private D3D11 device -> existing modern transport. Classic D3D9 still requires another transport or a translation route unless a different OS/driver target proves otherwise. The next probe must establish how a real D3D9Ex render target reaches the relay texture, how device reset/recreation behaves, and how the D3D11 relay feeds the existing x86 -> x64 bridge.
+**Implemented/host-tested architectural implication:** on this host the native D3D9Ex route now reaches the existing modern transport end to end: local D3D9Ex R10 render target -> `StretchRect` -> shared R10 relay -> private x86 D3D11 fullscreen conversion -> host-created shared RGBA8 transport -> x64 D3D12 consumer. Five dedicated 24-frame repetitions each survived one `ResetEx`/generation transition and completed with zero mismatches. R10 validation allows `rgb8_plus_minus_1_lsb` to account for D3D9 render-target quantization. The D3D9Ex renderer-to-relay interval averaged about `0.2109 ms` across run means and the D3D11 relay-to-RGBA8 shader interval about `1.9904 us`; these tiny single-host synthetic measurements are not performance validation. Classic D3D9 still requires another transport or a translation route unless a different OS/driver target proves otherwise.
 
 ## D3D8 routes
 
@@ -206,7 +206,7 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 - D3D11/D3D12 can support cross-process GPU resource and fence sharing through NT handles.
 - x86 game -> x64 modern helper is technically viable; DLSS5-Feeder demonstrates this pattern in real software.
 - D3D10 requires a different bridge strategy than D3D11 for modern helper interop; a private D3D11 relay is a demonstrated option.
-- Microsoft documents a constrained D3D9 -> D3D11 shared-texture path, but classic D3D9 versus D3D9Ex applicability is unresolved and must be probed.
+- Microsoft documents a constrained D3D9 -> D3D11 shared-texture path; the current-host probe resolves the practical split here as D3D9Ex-capable for the tested relay formats while classic D3D9 shared creation is rejected.
 - ReShade offers useful API/depth observation across D3D9/10/11 but has API-specific constraints.
 - OptiScaler assumes a substantially more modern temporal integration than many legacy games provide.
 - DLSS, FidelityFX temporal upscaling, and XeSS overlap on color/depth/MV/jitter concepts but do not have identical contracts.
@@ -217,7 +217,7 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 - D3D11 x64 + native-resolution AA is the best first harness for validating the contract.
 - A generic x86/x64 transport can be backend-independent if it transports typed frame resources and synchronization rather than DLSS-specific state.
 - D3D10 can reuse most of a D3D11 transport behind a relay without unacceptable latency.
-- Direct D3D9 interception plus a constrained D3D11 relay may preserve useful temporal reconstruction opportunities while reusing the modern transport, if the D3D9/D3D9Ex sharing probe succeeds.
+- Direct D3D9Ex interception plus a constrained D3D11 relay can reuse the modern transport on the current host; broader hardware/runtime coverage and real-game integration remain open.
 - D3D8 should be evaluated through native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths rather than inheriting the D3D9 decision automatically.
 - Image-space flow with confidence is a useful baseline but remains semantically weaker than renderer-native/transform-derived motion, especially for SR and VR.
 - ReShade demonstrates practical depth discovery/preservation techniques, but depth selection must retain provenance and support game/profile overrides.
@@ -229,8 +229,8 @@ This does **not** justify making D3D12 mandatory forever. It makes D3D12 x64 the
 
 1. Re-check the exact backend binaries, source files and third-party notices selected for any future distribution immediately before shipping; current NVIDIA, AMD, Intel, ReShade and dgVoodoo2 primary terms are now recorded at the level needed for architecture research.
 2. Re-check PE machine type when selecting a future AMD FSR SDK release for integration; `v2.3.0` signed DX12 DLLs are now verified x64.
-3. Move the proven D3D9Ex boundary from synthetic `UpdateTexture` input to a real local render-target -> relay copy, including reset/recreation behavior.
-4. Connect the D3D11 side of the D3D9Ex relay to the existing x86 -> x64 bridge and account for the complete producer-to-modern-host transfer path.
+3. Increase the D3D9Ex relay probe to larger/full-resolution targets and engine-like hazards/scheduling, keeping timing claims scoped to controlled transport work.
+4. Intercept a controlled real D3D9Ex scene/game path and compare the native relay with dgVoodoo2 on the same target.
 5. Motion-vector quality ladder on static geometry, skinned geometry, particles, and independently moving first-person/VR objects.
 6. A renderer-resolution control strategy for real SR in engines that hard-code backbuffer-sized targets.
 7. A controlled render-stage/resolution-assumption matrix for post-process, highlights/HUD, particles/billboards and mip bias when render and output extents differ.

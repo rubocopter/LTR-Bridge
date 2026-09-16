@@ -157,9 +157,13 @@ struct ExpectedColor {
     const auto quantize10 = [](std::uint8_t value) {
       return (static_cast<std::uint32_t>(value) * 1023U + 127U) / 255U;
     };
-    return (packed & 0x3FFU) == quantize10(expected.r) &&
-           ((packed >> 10U) & 0x3FFU) == quantize10(expected.g) &&
-           ((packed >> 20U) & 0x3FFU) == quantize10(expected.b) &&
+    const auto close10 = [](std::uint32_t actual, std::uint32_t expected_value) {
+      return actual == expected_value || actual + 1U == expected_value ||
+             expected_value + 1U == actual;
+    };
+    return close10(packed & 0x3FFU, quantize10(expected.r)) &&
+           close10((packed >> 10U) & 0x3FFU, quantize10(expected.g)) &&
+           close10((packed >> 20U) & 0x3FFU, quantize10(expected.b)) &&
            ((packed >> 30U) & 0x3U) == 3U;
   }
   const auto *halves = reinterpret_cast<const std::uint16_t *>(pixel);
@@ -171,52 +175,6 @@ struct ExpectedColor {
     if (std::abs(half_to_float(halves[i]) - expected_channels[i]) > 0.0015f)
       return false;
   return true;
-}
-
-[[nodiscard]] bool fill_upload_texture(IDirect3DTexture9 *texture,
-                                       const FormatCase &format,
-                                       ExpectedColor color, UINT width,
-                                       UINT height) {
-  D3DLOCKED_RECT locked{};
-  if (!check(texture->LockRect(0, &locked, nullptr, 0),
-             "IDirect3DTexture9::LockRect(upload)"))
-    return false;
-  const auto q10 = [](std::uint8_t value) {
-    return (static_cast<std::uint32_t>(value) * 1023U + 127U) / 255U;
-  };
-  const std::uint32_t packed10 =
-      q10(color.r) | (q10(color.g) << 10U) | (q10(color.b) << 20U) |
-      (3U << 30U);
-  const std::uint16_t packed16f[4] = {
-      float_to_half(static_cast<float>(color.r) / 255.0f),
-      float_to_half(static_cast<float>(color.g) / 255.0f),
-      float_to_half(static_cast<float>(color.b) / 255.0f), float_to_half(1.0f)};
-  for (UINT y = 0; y < height; ++y) {
-    auto *row = static_cast<std::uint8_t *>(locked.pBits) +
-                static_cast<std::size_t>(y) * locked.Pitch;
-    for (UINT x = 0; x < width; ++x) {
-      if (format.dxgi_format == DXGI_FORMAT_R8G8B8A8_UNORM) {
-        auto *pixel = row + static_cast<std::size_t>(x) * 4U;
-        pixel[0] = color.r;
-        pixel[1] = color.g;
-        pixel[2] = color.b;
-        pixel[3] = color.a;
-      } else if (format.dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM) {
-        auto *pixel = row + static_cast<std::size_t>(x) * 4U;
-        pixel[0] = color.b;
-        pixel[1] = color.g;
-        pixel[2] = color.r;
-        pixel[3] = color.a;
-      } else if (format.dxgi_format == DXGI_FORMAT_R10G10B10A2_UNORM) {
-        std::memcpy(row + static_cast<std::size_t>(x) * 4U, &packed10,
-                    sizeof(packed10));
-      } else {
-        std::memcpy(row + static_cast<std::size_t>(x) * 8U, packed16f,
-                    sizeof(packed16f));
-      }
-    }
-  }
-  return check(texture->UnlockRect(0), "IDirect3DTexture9::UnlockRect(upload)");
 }
 
 [[nodiscard]] UINT bytes_per_pixel(DXGI_FORMAT format) noexcept {
@@ -306,23 +264,31 @@ struct D3D11Side {
              "CreateTexture2D(staging)"))
     return false;
 
-  ComPtr<IDirect3DTexture9> upload;
-  if (!check(device9->CreateTexture(spec.width, spec.height, 1, 0,
-                                    format.d3d9_format, D3DPOOL_SYSTEMMEM,
-                                    &upload, nullptr),
-             "IDirect3DDevice9::CreateTexture(upload)"))
+  ComPtr<IDirect3DTexture9> renderer_texture;
+  if (!check(device9->CreateTexture(spec.width, spec.height, 1,
+                                    D3DUSAGE_RENDERTARGET,
+                                    format.d3d9_format, D3DPOOL_DEFAULT,
+                                    &renderer_texture, nullptr),
+             "IDirect3DDevice9::CreateTexture(renderer-target)"))
+    return false;
+  ComPtr<IDirect3DSurface9> renderer_surface, relay_surface;
+  if (!check(renderer_texture->GetSurfaceLevel(0, &renderer_surface),
+             "GetSurfaceLevel(renderer-target)") ||
+      !check(texture9->GetSurfaceLevel(0, &relay_surface),
+             "GetSurfaceLevel(relay)"))
     return false;
 
   const UINT bpp = bytes_per_pixel(format.dxgi_format);
   for (std::uint32_t local = 0; local < kFramesPerGeneration; ++local) {
     const std::uint32_t frame = frame_base + local;
     const auto expected = frame_color(frame);
-    if (!fill_upload_texture(upload.Get(), format, expected, spec.width,
-                             spec.height))
-      return false;
     const auto d3d9_start = std::chrono::steady_clock::now();
-    if (!check(device9->UpdateTexture(upload.Get(), texture9),
-               "IDirect3DDevice9::UpdateTexture") ||
+    if (!check(device9->ColorFill(renderer_surface.Get(), nullptr,
+                                  d3d_color(expected)),
+               "IDirect3DDevice9::ColorFill(renderer-target)") ||
+        !check(device9->StretchRect(renderer_surface.Get(), nullptr,
+                                    relay_surface.Get(), nullptr, D3DTEXF_NONE),
+               "IDirect3DDevice9::StretchRect(renderer-target->relay)") ||
         !wait_d3d9_event(device9))
       return false;
     d3d9_sync_sum_ms += std::chrono::duration<double, std::milli>(
@@ -356,7 +322,31 @@ struct RuntimeResult {
   std::uint32_t opened_formats = 0;
   std::uint32_t passed_formats = 0;
   std::uint64_t mismatches = 0;
+  std::uint32_t device_resets = 0;
 };
+
+[[nodiscard]] bool reset_device(IDirect3DDevice9 *device, const char *runtime,
+                                std::uint32_t generation) {
+  ComPtr<IDirect3DSwapChain9> swap;
+  D3DPRESENT_PARAMETERS pp{};
+  if (!check(device->GetSwapChain(0, &swap), "GetSwapChain(reset)") ||
+      !check(swap->GetPresentParameters(&pp), "GetPresentParameters(reset)"))
+    return false;
+  swap.Reset();
+  pp.BackBufferWidth += 8U;
+  pp.BackBufferHeight += 8U;
+  HRESULT hr = E_NOINTERFACE;
+  ComPtr<IDirect3DDevice9Ex> ex;
+  if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&ex))))
+    hr = ex->ResetEx(&pp, nullptr);
+  else
+    hr = device->Reset(&pp);
+  std::cout << "runtime=" << runtime << " reset_after_generation=" << generation
+            << " reset_hr=0x" << std::hex << static_cast<unsigned long>(hr)
+            << std::dec << " backbuffer=" << pp.BackBufferWidth << "x"
+            << pp.BackBufferHeight << "\n";
+  return check(hr, "D3D9 device reset");
+}
 
 template <typename DeviceFactory>
 RuntimeResult run_runtime(const char *name, IDirect3D9 *d3d9,
@@ -405,6 +395,14 @@ RuntimeResult run_runtime(const char *name, IDirect3D9 *d3d9,
         complete = false;
         break;
       }
+      texture.Reset();
+      if (generation + 1U < std::size(kGenerations)) {
+        if (!reset_device(device.Get(), name, generation)) {
+          complete = false;
+          break;
+        }
+        ++result.device_resets;
+      }
     }
     if (!complete)
       continue;
@@ -418,9 +416,11 @@ RuntimeResult run_runtime(const char *name, IDirect3D9 *d3d9,
               << " frames=" << total_frames << " recreations="
               << (std::size(kGenerations) - 1U)
               << " mismatches=" << case_mismatches
+              << " renderer_transfer=render_target_stretchrect_to_relay"
+              << " device_resets=1"
               << " synchronization=d3d9_event_query_then_d3d11_readback "
               << std::fixed << std::setprecision(4)
-              << "d3d9_update_event_cpu_wall_mean_ms="
+              << "d3d9_render_transfer_event_cpu_wall_mean_ms="
               << (d3d9_sync_sum_ms / static_cast<double>(total_frames))
               << " d3d11_validation_copy_map_cpu_wall_mean_ms="
               << (d3d11_readback_sum_ms / static_cast<double>(total_frames))
@@ -507,10 +507,12 @@ int wmain() {
             << " classic_opened_formats=" << classic_result.opened_formats
             << " classic_passed_formats=" << classic_result.passed_formats
             << " classic_mismatches=" << classic_result.mismatches
+            << " classic_device_resets=" << classic_result.device_resets
             << " ex_created=" << ex_result.created
             << " ex_opened_formats=" << ex_result.opened_formats
             << " ex_passed_formats=" << ex_result.passed_formats
-            << " ex_mismatches=" << ex_result.mismatches << "\n";
+            << " ex_mismatches=" << ex_result.mismatches
+            << " ex_device_resets=" << ex_result.device_resets << "\n";
   std::cout << "classic_runtime_result=" << (classic_pass ? "PASS" : "NO_PATH")
             << " ex_runtime_result=" << (ex_pass ? "PASS" : "NO_PATH")
             << "\nRESULT " << ((classic_pass || ex_pass) ? "PASS" : "FAIL")

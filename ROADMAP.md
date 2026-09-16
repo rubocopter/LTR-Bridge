@@ -85,18 +85,18 @@ Also test Shader Model 4-compatible MV reconstruction paths and compare event-qu
 
 ## Phase 5 — D3D9 architecture comparison
 
-Status: **minimal x86 classic-D3D9/D3D9Ex -> D3D11 interop probe implemented and host-tested; current-host D3D9Ex relay proven for R10G10B10A2/RGBA16F plus a BGRA8 control, classic D3D9 shared creation rejected; renderer-source copy, device reset and downstream x64 integration pending**.
+Status: **current-host D3D9Ex local render target -> shared relay -> private D3D11 conversion -> existing x86/x64 D3D12 transport implemented and host-tested, including `ResetEx`/resource recreation; classic D3D9 shared creation remains a host-tested negative boundary**.
 
 Start with a minimal API-interop probe before attempting reconstruction:
 
 - [x] classic D3D9 producer -> shared-texture creation attempt -> D3D11 consumer boundary;
 - [x] D3D9Ex producer -> shared texture -> D3D11 consumer;
 - [x] verify first-host format behavior, pixel contents, explicit event-query synchronization and resource recreation;
-- [ ] copy from a realistic D3D9 render target into the relay texture and measure that adapter cost;
-- [ ] exercise D3D9/D3D9Ex device reset and relay-resource recreation;
-- [ ] feed the D3D11 relay into the existing x86 -> x64 transport path.
+- [x] copy from a local D3D9Ex render target into the relay texture with `StretchRect` and account for completion cost;
+- [x] exercise D3D9Ex `ResetEx` and relay-resource recreation;
+- [x] feed the D3D11 relay into the existing x86 -> x64 D3D12 transport path.
 
-Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` with D3D11, including `64x64 -> 96x72` recreation and 12 zero-mismatch frames per format. The documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails on this host, while an out-of-document `A8R8G8B8 -> B8G8R8A8_UNORM` control succeeds. Five additional repetitions reproduced all of these boundaries. This is host-specific interop evidence, not a universal D3D9 support table.
+Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` with D3D11; the documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails here, while an out-of-document `A8R8G8B8 -> B8G8R8A8_UNORM` control succeeds. The independent probe now fills a real local D3D9Ex render target, copies it into the shareable relay with `StretchRect`, waits on `D3DQUERYTYPE_EVENT`, performs one `ResetEx`, recreates `64x64 -> 96x72`, and validates 12 frames with zero mismatches. Five repetitions measured mean `StretchRect + event` CPU-wall intervals of about `0.262 ms` for R10, `0.237 ms` for RGBA16F and `0.240 ms` for the BGRA8 control. The integrated bridge route uses the R10 relay, opens it in private x86 D3D11, converts it to the existing shared RGBA8 transport with a fullscreen shader, then completes the established x86 -> x64 D3D12 path. Five dedicated 24-frame runs passed with one `ResetEx`, one generation transition and zero mismatches; the D3D9Ex renderer-to-relay interval averaged about `0.2109 ms` across run means and the D3D11 relay-to-RGBA8 shader interval about `1.9904 us`. R10 validation permits `rgb8_plus_minus_1_lsb` because D3D9 render-target quantization can differ by one 8-bit LSB from the synthetic reference. These are tiny synthetic single-host measurements, not performance validation.
 
 Then compare three routes on the same controlled target:
 

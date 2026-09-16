@@ -1,6 +1,6 @@
 # x86 -> x64 bridge research
 
-Status: **local D3D11 x86 -> D3D12 x64 multiframe prototype implemented and host-tested; repeated frames, true mid-run resource replacement, controlled process/device loss, bounded ring-depth backpressure, two-eye isolation, synthetic per-eye GPU-history isolation/reset semantics, high-resolution copy, 4x-MSAA resolve, R10-to-RGBA8 conversion, a small format/interoperability matrix and negative-path diagnostics are covered; broader renderer integration, failure timing and OpenXR/headset execution remain pending**.
+Status: **local D3D11 x86 -> D3D12 x64 multiframe prototype implemented and host-tested; repeated frames, true mid-run resource replacement, controlled process/device loss, bounded ring-depth backpressure, two-eye isolation, synthetic per-eye GPU-history isolation/reset semantics, high-resolution copy, 4x-MSAA resolve, R10-to-RGBA8 conversion, a small format/interoperability matrix, negative-path diagnostics, and a current-host D3D9Ex render-target -> relay -> bridge route are covered; broader real-renderer integration, failure timing and OpenXR/headset execution remain pending**.
 
 ## Why a bridge is needed
 
@@ -101,7 +101,7 @@ Candidate routes:
 2. classic D3D9 adapter -> another explicit transport if direct sharing is unavailable;
 3. D3D9 -> dgVoodoo2 -> D3D11 -> modern sharing.
 
-The next decision gate is a real-render-target -> D3D9Ex relay copy plus reset/recreation behavior, followed by connection of that D3D11 relay to the already-proven x86 -> x64 bridge.
+That D3D9Ex gate is now host-tested. The x86 producer creates a local D3D9Ex `A2B10G10R10` render target, copies it with `StretchRect` into a shareable R10 relay, waits for `D3DQUERYTYPE_EVENT`, opens the relay in a private D3D11 device, and converts it by fullscreen shader into the existing host-created shared RGBA8 transport resource. The x64 D3D12 consumer then follows the established fence protocol and compute path. One `ResetEx` plus `64x64 -> 96x72` resource replacement succeeds in the same live run. Five dedicated 24-frame repetitions completed with zero mismatches. Validation allows ±1 8-bit LSB on the realistic R10 source because D3D9 render-target quantization can differ slightly from the synthetic reference. Across those repetitions, run-mean D3D9Ex render-target-to-relay CPU-wall time averaged about `0.2109 ms`, while run-mean D3D11 R10-to-RGBA8 shader time averaged about `1.9904 us`; these tiny synthetic extents are not performance validation.
 
 ## Host-created vs client-created resources
 

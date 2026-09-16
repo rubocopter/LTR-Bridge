@@ -64,6 +64,9 @@ Invoke-Checked $consumer @("--producer", $producer, "--renderer-resolve-msaa4x")
 Write-Host "=== renderer R10 -> shared RGBA8 conversion probe ==="
 Invoke-Checked $consumer @("--producer", $producer, "--renderer-convert-r10")
 
+Write-Host "=== D3D9Ex render-target -> R10 relay -> D3D11 -> x64 bridge probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--d3d9ex-relay")
+
 foreach ($negative in @(
     "protocol",
     "adapter",
