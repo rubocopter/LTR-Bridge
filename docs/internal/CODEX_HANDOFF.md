@@ -1,6 +1,6 @@
 # Codex handoff
 
-Updated: 2026-09-14.
+Updated: 2026-09-16.
 
 ## Repository state
 
@@ -28,6 +28,7 @@ Core files now present:
 - `docs/HARNESS.md`
 - `docs/CASE_STUDY_BIOSHOCK_VR.md`
 - `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`
+- `docs/CASE_STUDY_OFXR_BRIDGE.md`
 - `docs/REFERENCES.md`
 
 ## Strongest first-pass findings
@@ -86,7 +87,7 @@ Pinned public reference: `BradyBrenot/RogueTrader_DLSS` release `v2.2` / commit 
 
 `Legacy API Adapter -> Temporal Data Provider -> optional Transport -> Modern Graphics Host -> Reconstruction Backend -> game/VR output`
 
-Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement. The BioShock and Rogue Trader case studies independently strengthen the separation between shared semantic/transport/backend mechanisms and game-specific temporal providers while showing different fidelity points on the same temporal-quality ladder.
+Treat this as a hypothesis until the first probes are complete. The second pass strengthens D3D12 x64 as the first modern-host target, but does not make it a permanent universal requirement. The BioShock and Rogue Trader case studies independently strengthen the separation between shared semantic/transport/backend mechanisms and game-specific temporal providers while showing different fidelity points on the same temporal-quality ladder. OFXR Bridge adds complementary evidence for a separable OpenXR presentation/pacing stage after reconstruction.
 
 ## Phase 1 harness state
 
@@ -125,25 +126,31 @@ Treat this as a hypothesis until the first probes are complete. The second pass 
 33. **Observed:** a second XeSS context enables `XESS_INIT_FLAG_RESPONSIVE_PIXEL_MASK` and marks only pixels whose synthetic moving-HUD membership changes. On the local RTX 4070 Ti / driver `32.0.16.1692`, final changed-region RGB MAE fell from `8.3259` baseline to `5.6902` with the responsive mask, and output hashes differed. This is the first real backend mapping of the HUD/content-classification requirement under coherent jitter/MV semantics; it is not a universal HUD policy or visual-quality validation.
 34. **Host-tested:** the XeSS-enabled build passed all three tests: XeSS Native AA probe, D3D11 temporal harness self-test and independent optical-flow probe. GitHub CI remains SDK/GPU-neutral because the XeSS target is opt-in.
 35. **Host-tested:** D3D12 timestamp queries around `xessD3D12Execute` after two warm-up frames measured baseline mean/min/max `0.1886/0.1874/0.1894 ms` and responsive mean/min/max `0.1895/0.1884/0.1905 ms` at `256x144`. `xessGetProperties` reported `65,536` bytes temp-buffer plus `1,835,008` bytes temp-texture heap per context (`1.8125 MiB`). These numbers are single-host, low-resolution evidence only and are not `performance-validated`.
-36. **Experiment-pending:** real skinned/cloth content, real particle systems, real-engine/general transparency/HUD policy, real-content optical-flow validation, direct renderer-resource transfer, repeated/resolution-scaled performance and memory measurement, additional backend mappings, SR, and stereo.
+36. **Host-tested:** the repeated XeSS Native AA matrix completed five runs at each of 256x144, 1280x720, 1920x1080, 2560x1440 and 3840x2160. Baseline execute means were `0.1950`, `0.4430`, `0.6676`, `0.9647` and `2.0014 ms`; SDK temporary-heap capacity per context was `1.8125`, `28.5`, `66.1875`, `112.875` and `249.5625 MiB`. This remains one-host Native AA evidence, not `performance-validated`.
+37. **Verified/observed upstream:** OFXR Bridge at `dad56acafc6e1dde219940427738b926cf2ea555` demonstrates an OpenXR implicit-layer synthetic-frame presentation path with per-view resources, private swapchains, D3D11->D3D12 interop, pose/FOV-aware synthesis and explicit pacing/lifetime handling. Its normal path is color-only optical flow without game depth/MV and documents corresponding motion/disocclusion/head-rotation limitations. Full notes are in `docs/CASE_STUDY_OFXR_BRIDGE.md`.
+38. **Implemented/host-tested:** the first local D3D11 x86 -> D3D12 x64 round-trip probe now passes. The x64 host creates a shared D3D12 texture; the x86 client opens it with `OpenSharedResource1`, uploads a deterministic 64x64 pattern, creates/signals a shared D3D11 fence, and waits for the x64 D3D12 in-place compute inversion. Final D3D11 staging validation reports `4096` pixels and `0` mismatches. No pixel payload crosses the process boundary; CPU readback is validation-only.
+39. **Observed:** ownership direction matters on the current host. The passing path uses D3D12 ownership for the shared texture and D3D11 ownership for the shared fence. Earlier local attempts with a D3D11-created texture did not produce visible D3D12 writes in the validation path, and a D3D12-created fence opened by D3D11 returned `E_INVALIDARG` on `ID3D11DeviceContext4::Signal`. Treat these as scoped experiment results, not universal unsupported claims.
+40. **Experiment-pending:** bridge resize/rebuild, repeated-frame timing/copy accounting, host/client failure handling, protocol/version diagnostics, adapter/format negative cases, backpressure, stereo contamination testing, real skinned/cloth content, real particle systems, real-engine/general transparency/HUD policy, real-content optical-flow validation, direct renderer-resource transfer, longer/multi-host performance and total-VRAM measurement, additional backend mappings, SR, and stereo/OpenXR execution.
 
 ## Next concrete work
 
 1. Re-inspect repository state and this handoff.
-2. Continue Phase 1 from the validated renderer-ground-truth, camera+depth, optical-flow and coherent-jitter/MV XeSS Native AA baselines. Before the x86 bridge, expand the XeSS measurement across useful resolutions/repeated runs and preserve the distinction between SDK temporary-heap requirements and total VRAM use.
+2. The repeated XeSS resolution matrix is complete on the current host. Preserve the distinction between SDK temporary-heap requirements and total VRAM use; add longer/multi-host measurements later rather than blocking the next transport probe.
 3. AMD FSR `v2.3.0` signed DX12 binaries are verified x64. Re-check the exact artifacts if a different AMD SDK release is selected. Primary license terms for NVIDIA, AMD, Intel, ReShade and dgVoodoo2 are already recorded; re-check exact selected components before shipping.
 4. Before a large D3D9 experiment, build the smallest possible classic-D3D9/D3D9Ex -> D3D11 shared-texture probe to resolve the Microsoft-documentation ambiguity and measure synchronization/copy behavior.
 5. The HUD/highlight requirement now has one concrete XeSS responsive-mask mapping. Preserve that as backend-specific evidence; transparency remains separately unresolved, and no universal reactive/composition policy is selected. Keep real skinned/cloth and particle systems explicitly pending before treating any provider as broadly representative.
 6. Use the independent optical-flow baseline beside ground truth and camera+depth motion to quantify quality loss; the first coherent jitter/MV Native AA path now exists, so the next evidence should focus on broader resolution/content coverage rather than another zero-jitter bootstrap.
-7. Build a backend-neutral D3D11 x86 -> D3D12 x64 round-trip resource-sharing probe. From the first stereo-capable version, include two independent streams, distinct histories/resources, deterministic readback and cross-eye contamination detection.
+7. The minimal D3D11 x86 -> D3D12 x64 round-trip now passes. Expand it next with repeated frames, resize/rebuild, timing/copy accounting and controlled host-loss/adapter/format failures before promoting it beyond a host-tested probe. When stereo is added, use two independent streams, distinct histories/resources, deterministic readback and cross-eye contamination detection. OFXR Bridge informs the later OpenXR presentation/lifetime stage but is not a transport dependency.
 8. Reproduce the D3D10 relay and then compare D3D9 native dedicated transport, D3D9/D3D9Ex -> D3D11 relay, and dgVoodoo2 translation on the same target.
 9. Once D3D9 is understood, compare D3D8 native interception, d3d8to9->D3D9 and dgVoodoo2->modern paths on one controlled scene.
 10. When moving from native-AA to true SR, add a render-stage/resolution-assumption matrix covering post-processing, HUD/highlights, particles/billboards, mip bias and secondary-camera/pass behavior.
+11. Revisit the Rogue Trader EnhancedGraphics upstream when its author publishes the announced OFXR Bridge integration branch/version. The current statement says native interpolation integration is under development, but no public implementation has been reviewed yet; do not promote it to architectural evidence until source is available and pinned.
 
 ## Important upstream snapshot
 
 - BioShock VR DLSS/DLAA case study: `v0.2.17-en` / `8671fc87c4646140419ea64bd6e60d59fcac4723`.
 - Rogue Trader EnhancedGraphics case study: public fork `v2.2` / `01b1cd816db08f2b1c6c68b1319c6f44dd61bdd6` (original baseline `f2444b09ecee649e39851715cb5133e7020e159c`).
+- OFXR Bridge presentation case study: `dad56acafc6e1dde219940427738b926cf2ea555`; upstream README identifies pre-release `v0.2.1` / internal build `V116`.
 - DLSS5-Feeder stable observed: `v0.15.1` / `3f62485`.
 - DLSS5-Feeder newest prerelease observed: `v1.16.0-beta.1` / `55c5bca`.
 - OptiScaler stable observed: `v0.9.4` / `7534ad0`.

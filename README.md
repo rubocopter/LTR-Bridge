@@ -20,7 +20,7 @@ The largest unresolved problem is not calling an upscaler. It is producing trust
 
 The controlled D3D11 x64 harness foundation is implemented and host-tested. It renders known 1:1 scenarios with projection jitter, shader-readable depth, renderer-ground-truth motion, explicit history resets, provisional view identity, content/history diagnostics, camera+depth reconstruction and an independent synthetic optical-flow baseline.
 
-The first optional real backend probe is also implemented: XeSS SDK 3.0.2 Native AA executes at 1.0x on D3D12 x64 against deterministic synthetic inputs. It now shares the harness's Halton jitter sequence and motion convention (current-to-previous render-pixel MV with jitter excluded), exercises XeSS's responsive-pixel mask, and records first-host GPU timestamp plus temporary-heap measurements. This is one host/backend result, not general support or performance validation. Phase 1 still needs broader content, resolution, visual and backend validation before legacy transport work is promoted.
+The first optional real backend probe is also implemented: XeSS SDK 3.0.2 Native AA executes at 1.0x on D3D12 x64 against deterministic synthetic inputs. It now shares the harness's Halton jitter sequence and motion convention (current-to-previous render-pixel MV with jitter excluded), exercises XeSS's responsive-pixel mask, and records first-host GPU timestamp plus temporary-heap measurements. Repeated Native AA measurements cover 256x144 through 3840x2160 on the same host. The first cross-bitness transport probe is also host-tested: an x64 D3D12 host-created texture is opened and populated by an x86 D3D11 client, transformed on D3D12, and verified back in x86 with zero pixel mismatches. These remain controlled host results, not general support or performance validation.
 
 This order is a research hypothesis, not a permanent product architecture.
 
@@ -41,13 +41,14 @@ This order is a research hypothesis, not a permanent product architecture.
 - [docs/XESS_NATIVE_AA_PROBE.md](docs/XESS_NATIVE_AA_PROBE.md) — optional XeSS 3.0.2 D3D12 Native AA execution and responsive-mask probe.
 - [docs/CASE_STUDY_BIOSHOCK_VR.md](docs/CASE_STUDY_BIOSHOCK_VR.md) — x86/x64 stereo transport and game-specific temporal-provider case study.
 - [docs/CASE_STUDY_ROGUE_TRADER_DLSS.md](docs/CASE_STUDY_ROGUE_TRADER_DLSS.md) — renderer-native resolution/jitter/MV integration case study.
+- [docs/CASE_STUDY_OFXR_BRIDGE.md](docs/CASE_STUDY_OFXR_BRIDGE.md) — OpenXR synthetic-frame presentation, stereo resource lifetime and pacing case study.
 - [docs/REFERENCES.md](docs/REFERENCES.md) — research snapshot and source versions.
 
 ## Validation vocabulary
 
 Repository claims use explicit maturity states: `planned`, `implemented`, `host-tested`, `live-tested`, `visual-validated`, `performance-validated`, `vr-headset-validated`, and `supported`.
 
-As of 2026-09-14 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline and an optional host-tested XeSS Native AA probe. No production injector is implemented.
+As of 2026-09-16 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline, an optional host-tested XeSS Native AA probe, and a host-tested minimal D3D11 x86 -> D3D12 x64 transport round trip. No production injector is implemented.
 
 ## License
 

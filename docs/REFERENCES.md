@@ -1,6 +1,6 @@
 # References and research snapshot
 
-Research date: 2026-09-13. External projects change quickly; re-check versions before using a conclusion operationally.
+Research date: 2026-09-16. External projects change quickly; re-check versions before using a conclusion operationally.
 
 ## DLSS5-Feeder
 
@@ -130,3 +130,13 @@ When a design depends on an upstream implementation detail, replace moving `main
 - Current known MV limitation: open issue `#2` documents cloth/cape ghosting because cloth is not represented correctly in the motion-vector path.
 - Licensing note: no root repository license was detected in the reviewed public snapshots. Treat source as reference-only unless explicit reuse terms are obtained; NVIDIA DLSS/NGX remains separately licensed.
 - Full notes: `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`.
+
+### OFXR Bridge
+
+- Repository: https://github.com/tig3rmast3r/OFXR-Bridge
+- Pinned source reviewed: `dad56acafc6e1dde219940427738b926cf2ea555` (2026-09-16).
+- Upstream README pre-release identifier: `v0.2.1`, internal build `V116`.
+- Research use: OpenXR implicit-layer frame insertion, per-view/private-swapchain lifetime, D3D11 -> D3D12 interop, pose/FOV-aware synthesis and runtime/frame-pacing failure modes.
+- Important limitation: current normal generation is color-only optical flow without game depth or renderer motion vectors; translation compensation is depth-unaware.
+- License: LGPL-3.0-or-later for OFXR Bridge; third-party components retain separate terms.
+- Full notes: `docs/CASE_STUDY_OFXR_BRIDGE.md`.
