@@ -28,11 +28,12 @@ namespace {
 struct Options {
   std::wstring producer, negative;
   std::uint32_t backpressure_depth = 0;
+  std::uint32_t renderer_copy_mode = 0;
+  std::wstring renderer_profile;
   bool stereo = false;
   bool stereo_contamination = false;
   bool stereo_history = false;
   bool stereo_history_swap = false;
-  bool renderer_copy = false;
 };
 [[nodiscard]] bool parse(int argc, wchar_t **argv, Options &o) {
   for (int i = 1; i < argc; ++i) {
@@ -63,15 +64,33 @@ struct Options {
       o.stereo_history = true;
       o.stereo_history_swap = true;
     } else if (k == L"--renderer-copy") {
-      o.renderer_copy = true;
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 1U;
+      o.renderer_profile = L"tiny-copy";
+    } else if (k == L"--renderer-copy-highres") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 1U;
+      o.renderer_profile = L"highres-copy";
+    } else if (k == L"--renderer-resolve-msaa4x") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 2U;
+      o.renderer_profile = L"msaa4x-resolve";
+    } else if (k == L"--renderer-convert-r10") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 3U;
+      o.renderer_profile = L"r10-to-rgba8";
     } else
       return false;
   }
   return !o.producer.empty() &&
          (o.negative.empty() || o.backpressure_depth == 0U) &&
          (!o.stereo || (o.negative.empty() && o.backpressure_depth == 0U)) &&
-         (!o.renderer_copy || (o.negative.empty() && o.backpressure_depth == 0U &&
-                               !o.stereo));
+         (!o.renderer_copy_mode ||
+          (o.negative.empty() && o.backpressure_depth == 0U && !o.stereo));
 }
 [[nodiscard]] ComPtr<ID3D12Resource>
 texture(ID3D12Device *d, std::uint32_t w, std::uint32_t h,
@@ -118,7 +137,9 @@ int wmain(int argc, wchar_t **argv) {
            "device-removal|host-termination|"
            "backpressure-host-termination]"
            " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
-           "--stereo-history|--stereo-history-swap] [--renderer-copy]\n";
+           "--stereo-history|--stereo-history-swap] [--renderer-copy|"
+           "--renderer-copy-highres|--renderer-resolve-msaa4x|"
+           "--renderer-convert-r10]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -135,6 +156,17 @@ int wmain(int argc, wchar_t **argv) {
   if (!check(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)),
              "CreateCommandQueue"))
     return 4;
+  auto specs = std::vector<ltr::bridge_probe::GenerationSpec>(
+      std::begin(ltr::bridge_probe::kGenerations),
+      std::end(ltr::bridge_probe::kGenerations));
+  if (o.renderer_profile == L"highres-copy") {
+    specs[0] = {1920, 1080};
+    specs[1] = {3840, 2160};
+  } else if (o.renderer_profile == L"msaa4x-resolve" ||
+             o.renderer_profile == L"r10-to-rgba8") {
+    specs[0] = {1920, 1080};
+    specs[1] = {2560, 1440};
+  }
   ComPtr<ID3D12Resource> res[ltr::bridge_probe::kGenerationCount];
   HANDLE rh[ltr::bridge_probe::kGenerationCount]{};
   SECURITY_ATTRIBUTES sa{};
@@ -147,8 +179,7 @@ int wmain(int argc, wchar_t **argv) {
     resource_format = DXGI_FORMAT_R32G32B32A32_FLOAT;
   else if (o.negative == L"format-rgba8uint")
     resource_format = DXGI_FORMAT_R8G8B8A8_UINT;
-  res[0] = texture(dev.Get(), ltr::bridge_probe::kGenerations[0].width,
-                   ltr::bridge_probe::kGenerations[0].height, resource_format);
+  res[0] = texture(dev.Get(), specs[0].width, specs[0].height, resource_format);
   if (!res[0])
     return 5;
   if (!check(dev->CreateSharedHandle(res[0].Get(), &sa, GENERIC_ALL, nullptr,
@@ -156,8 +187,7 @@ int wmain(int argc, wchar_t **argv) {
              "CreateSharedHandle(resource0)"))
     return 6;
   if (o.backpressure_depth == 2U || o.stereo) {
-    res[1] = texture(dev.Get(), ltr::bridge_probe::kGenerations[0].width,
-                     ltr::bridge_probe::kGenerations[0].height);
+    res[1] = texture(dev.Get(), specs[0].width, specs[0].height);
     if (!res[1])
       return 5;
     if (!check(dev->CreateSharedHandle(res[1].Get(), &sa, GENERIC_ALL, nullptr,
@@ -211,9 +241,6 @@ int wmain(int argc, wchar_t **argv) {
       return 6;
   }
   std::uint32_t protocol = ltr::bridge_probe::kProtocolVersion;
-  auto specs = std::vector<ltr::bridge_probe::GenerationSpec>(
-      std::begin(ltr::bridge_probe::kGenerations),
-      std::end(ltr::bridge_probe::kGenerations));
   DWORD expected = 0;
   bool deferred_negative = false;
   std::uint32_t expect_host_stall = 0;
@@ -289,7 +316,7 @@ int wmain(int argc, wchar_t **argv) {
       << expect_backpressure_host_termination << L" --backpressure-depth "
       << o.backpressure_depth << L" --stereo-mode " << (o.stereo ? 1U : 0U)
       << L" --stereo-history-mode " << (o.stereo_history ? 1U : 0U)
-      << L" --renderer-copy-mode " << (o.renderer_copy ? 1U : 0U);
+      << L" --renderer-copy-mode " << o.renderer_copy_mode;
   std::wstring line = cmd.str();
   STARTUPINFOW si{};
   si.cb = sizeof(si);
@@ -958,16 +985,30 @@ int wmain(int argc, wchar_t **argv) {
               << " process_wall_ms=" << wall << "\nRESULT PASS\n";
     return 0;
   }
-  std::cout << "consumer_bitness=64 mode="
-            << (o.renderer_copy ? "renderer-copy" : "multiframe")
+  const char *mode_name = "multiframe";
+  const char *transfer_kind = "none";
+  if (o.renderer_copy_mode == 1U) {
+    mode_name = "renderer-copy";
+    transfer_kind = "copy";
+  } else if (o.renderer_copy_mode == 2U) {
+    mode_name = "renderer-resolve";
+    transfer_kind = "resolve-msaa4x";
+  } else if (o.renderer_copy_mode == 3U) {
+    mode_name = "renderer-convert";
+    transfer_kind = "shader-r10-to-rgba8";
+  }
+  std::cout << "consumer_bitness=64 mode=" << mode_name
             << " ownership=host_created_d3d12_resource "
                "transform=d3d12_compute_invert transport_gpu_copies=0\n"
             << "protocol_version=" << ltr::bridge_probe::kProtocolVersion
             << " generations=" << ltr::bridge_probe::kGenerationCount
             << " frames=" << total << " generation_size_transitions="
             << (ltr::bridge_probe::kGenerationCount - 1U)
-            << " renderer_to_shared_gpu_copies="
-            << (o.renderer_copy ? total : 0U)
+            << " generation0=" << specs[0].width << "x" << specs[0].height
+            << " generation1=" << specs[1].width << "x" << specs[1].height
+            << " renderer_transfer_kind=" << transfer_kind
+            << " renderer_to_shared_gpu_transfers="
+            << (o.renderer_copy_mode ? total : 0U)
             << " validation_gpu_copies=" << total << "\n"
             << std::fixed << std::setprecision(3)
             << "host_gpu_compute_mean_us=" << (sum / total)

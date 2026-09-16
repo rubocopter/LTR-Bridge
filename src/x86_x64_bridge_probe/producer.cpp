@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <d3d11_4.h>
+#include <d3dcompiler.h>
 #include <dxgi1_4.h>
 #include <iomanip>
 #include <iostream>
@@ -118,7 +120,7 @@ struct Arguments {
       if (!u32(v, a.stereo_history_mode) || a.stereo_history_mode > 1U)
         return false;
     } else if (k == L"--renderer-copy-mode") {
-      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 1U)
+      if (!u32(v, a.renderer_copy_mode) || a.renderer_copy_mode > 3U)
         return false;
     } else
       return false;
@@ -149,6 +151,46 @@ struct Arguments {
   }
   return true;
 }
+[[nodiscard]] std::uint32_t pack_r10g10b10a2(std::uint8_t r, std::uint8_t g,
+                                             std::uint8_t b) noexcept {
+  const auto q10 = [](std::uint8_t v) {
+    return (static_cast<std::uint32_t>(v) * 1023U + 127U) / 255U;
+  };
+  return q10(r) | (q10(g) << 10U) | (q10(b) << 20U) | (3U << 30U);
+}
+[[nodiscard]] ComPtr<ID3DBlob> compile_shader(const char *source,
+                                              const char *entry,
+                                              const char *target) {
+  ComPtr<ID3DBlob> bytecode, errors;
+  const HRESULT hr = D3DCompile(source, std::strlen(source), nullptr, nullptr,
+                                nullptr, entry, target,
+                                D3DCOMPILE_ENABLE_STRICTNESS, 0, &bytecode,
+                                &errors);
+  if (FAILED(hr)) {
+    std::cerr << "D3DCompile(" << entry << ") failed hr=0x" << std::hex
+              << static_cast<unsigned long>(hr) << std::dec;
+    if (errors)
+      std::cerr << " error=" << static_cast<const char *>(errors->GetBufferPointer());
+    std::cerr << "\n";
+    return nullptr;
+  }
+  return bytecode;
+}
+inline constexpr char kRendererBlitShader[] = R"(
+Texture2D<float4> SourceTexture : register(t0);
+struct VSOut {
+  float4 position : SV_Position;
+};
+VSOut VSMain(uint id : SV_VertexID) {
+  float2 p = float2((id << 1) & 2, id & 2);
+  VSOut o;
+  o.position = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+  return o;
+}
+float4 PSMain(VSOut input) : SV_Target {
+  return SourceTexture.Load(int3(uint2(input.position.xy), 0));
+}
+)";
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   static_assert(sizeof(void *) == 4, "producer must be built x86");
@@ -190,7 +232,38 @@ int wmain(int argc, wchar_t **argv) {
     return 7;
   ComPtr<ID3D11Texture2D> shared[ltr::bridge_probe::kGenerationCount],
       staging[ltr::bridge_probe::kGenerationCount],
-      renderer_source[ltr::bridge_probe::kGenerationCount];
+      renderer_source[ltr::bridge_probe::kGenerationCount],
+      renderer_upload[ltr::bridge_probe::kGenerationCount];
+  ComPtr<ID3D11ShaderResourceView>
+      renderer_input[ltr::bridge_probe::kGenerationCount];
+  ComPtr<ID3D11RenderTargetView>
+      renderer_target[ltr::bridge_probe::kGenerationCount];
+  ComPtr<ID3D11VertexShader> renderer_vs;
+  ComPtr<ID3D11PixelShader> renderer_ps;
+  UINT msaa4x_quality_levels = 0;
+  if (a.renderer_copy_mode == 2U || a.renderer_copy_mode == 3U) {
+    const auto vs = compile_shader(kRendererBlitShader, "VSMain", "vs_5_0");
+    const auto ps = compile_shader(kRendererBlitShader, "PSMain", "ps_5_0");
+    if (!vs || !ps ||
+        !check(dev->CreateVertexShader(vs->GetBufferPointer(),
+                                       vs->GetBufferSize(), nullptr,
+                                       &renderer_vs),
+               "CreateVertexShader(renderer-blit)") ||
+        !check(dev->CreatePixelShader(ps->GetBufferPointer(),
+                                      ps->GetBufferSize(), nullptr,
+                                      &renderer_ps),
+               "CreatePixelShader(renderer-blit)"))
+      return 10;
+  }
+  if (a.renderer_copy_mode == 2U) {
+    if (!check(dev->CheckMultisampleQualityLevels(
+                   DXGI_FORMAT_R8G8B8A8_UNORM, 4, &msaa4x_quality_levels),
+               "CheckMultisampleQualityLevels(renderer-msaa4x)") ||
+        msaa4x_quality_levels == 0) {
+      std::cerr << "renderer-msaa4x unsupported for R8G8B8A8_UNORM\n";
+      return 10;
+    }
+  }
   ltr::bridge_probe::GenerationSpec
       specs[ltr::bridge_probe::kGenerationCount]{};
   specs[0] = a.spec0;
@@ -211,18 +284,59 @@ int wmain(int argc, wchar_t **argv) {
   if (!check(dev->CreateTexture2D(&d0, nullptr, &staging[0]),
              "CreateTexture2D(staging0)"))
     return 10;
-  if (a.renderer_copy_mode) {
+  const auto create_renderer_resources = [&](std::uint32_t generation) {
+    if (!a.renderer_copy_mode)
+      return true;
     D3D11_TEXTURE2D_DESC renderer_desc{};
-    shared[0]->GetDesc(&renderer_desc);
+    shared[generation]->GetDesc(&renderer_desc);
     renderer_desc.Usage = D3D11_USAGE_DEFAULT;
-    renderer_desc.BindFlags = 0;
     renderer_desc.CPUAccessFlags = 0;
     renderer_desc.MiscFlags = 0;
-    if (!check(dev->CreateTexture2D(&renderer_desc, nullptr,
-                                    &renderer_source[0]),
-               "CreateTexture2D(renderer-source0)"))
-      return 10;
-  }
+    renderer_desc.SampleDesc.Count = 1;
+    renderer_desc.SampleDesc.Quality = 0;
+    if (a.renderer_copy_mode == 1U) {
+      renderer_desc.BindFlags = 0;
+      return check(dev->CreateTexture2D(&renderer_desc, nullptr,
+                                        &renderer_source[generation]),
+                   "CreateTexture2D(renderer-copy-source)");
+    }
+    if (a.renderer_copy_mode == 2U) {
+      D3D11_TEXTURE2D_DESC upload_desc = renderer_desc;
+      upload_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      if (!check(dev->CreateTexture2D(&upload_desc, nullptr,
+                                      &renderer_upload[generation]),
+                 "CreateTexture2D(renderer-msaa-upload)") ||
+          !check(dev->CreateShaderResourceView(renderer_upload[generation].Get(),
+                                               nullptr,
+                                               &renderer_input[generation]),
+                 "CreateShaderResourceView(renderer-msaa-upload)"))
+        return false;
+      renderer_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+      renderer_desc.SampleDesc.Count = 4;
+      renderer_desc.SampleDesc.Quality = 0;
+      return check(dev->CreateTexture2D(&renderer_desc, nullptr,
+                                        &renderer_source[generation]),
+                   "CreateTexture2D(renderer-msaa4x-source)") &&
+             check(dev->CreateRenderTargetView(renderer_source[generation].Get(),
+                                               nullptr,
+                                               &renderer_target[generation]),
+                   "CreateRenderTargetView(renderer-msaa4x-source)");
+    }
+    renderer_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    renderer_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    return check(dev->CreateTexture2D(&renderer_desc, nullptr,
+                                      &renderer_source[generation]),
+                 "CreateTexture2D(renderer-r10-source)") &&
+           check(dev->CreateShaderResourceView(renderer_source[generation].Get(),
+                                               nullptr,
+                                               &renderer_input[generation]),
+                 "CreateShaderResourceView(renderer-r10-source)") &&
+           check(dev->CreateRenderTargetView(shared[generation].Get(), nullptr,
+                                             &renderer_target[generation]),
+                 "CreateRenderTargetView(shared-rgba8)");
+  };
+  if (!create_renderer_resources(0))
+    return 10;
   if (a.backpressure_depth == 2U || a.stereo_mode) {
     specs[1] = a.spec0;
     if (!check(dev1->OpenSharedResource1(a.resource1_handle,
@@ -624,8 +738,33 @@ int wmain(int argc, wchar_t **argv) {
     }
     ctx->Begin(copy_disjoint.Get());
   }
+  const auto draw_renderer_blit = [&](std::uint32_t generation) {
+    const auto spec = specs[generation];
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(spec.width);
+    viewport.Height = static_cast<float>(spec.height);
+    viewport.MaxDepth = 1.0f;
+    ctx->RSSetViewports(1, &viewport);
+    ID3D11RenderTargetView *rtv = renderer_target[generation].Get();
+    ctx->OMSetRenderTargets(1, &rtv, nullptr);
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(renderer_vs.Get(), nullptr, 0);
+    ctx->PSSetShader(renderer_ps.Get(), nullptr, 0);
+    ID3D11ShaderResourceView *srv = renderer_input[generation].Get();
+    ctx->PSSetShaderResources(0, 1, &srv);
+    ctx->Draw(3, 0);
+    ID3D11ShaderResourceView *null_srv = nullptr;
+    ctx->PSSetShaderResources(0, 1, &null_srv);
+    ID3D11RenderTargetView *null_rtv = nullptr;
+    ctx->OMSetRenderTargets(1, &null_rtv, nullptr);
+  };
   for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
     if (g == 1) {
+      renderer_target[0].Reset();
+      renderer_input[0].Reset();
+      renderer_upload[0].Reset();
+      renderer_source[0].Reset();
       staging[0].Reset();
       shared[0].Reset();
       ltr::bridge_probe::DynamicResourceMessage message{};
@@ -678,14 +817,9 @@ int wmain(int argc, wchar_t **argv) {
         CloseHandle(fh);
         return 10;
       }
-      if (a.renderer_copy_mode) {
-        d.Usage = D3D11_USAGE_DEFAULT;
-        d.CPUAccessFlags = 0;
-        if (!check(dev->CreateTexture2D(&d, nullptr, &renderer_source[g]),
-                   "CreateTexture2D(dynamic-renderer-source)")) {
-          CloseHandle(fh);
-          return 10;
-        }
+      if (!create_renderer_resources(g)) {
+        CloseHandle(fh);
+        return 10;
       }
       std::cout << "dynamic_resource_opened generation=" << g
                 << " size=" << specs[g].width << "x" << specs[g].height << "\n";
@@ -693,6 +827,9 @@ int wmain(int argc, wchar_t **argv) {
     const auto spec = specs[g];
     std::vector<std::uint8_t> p(static_cast<std::size_t>(spec.width) *
                                 spec.height * 4U);
+    std::vector<std::uint32_t> p10;
+    if (a.renderer_copy_mode == 3U)
+      p10.resize(static_cast<std::size_t>(spec.width) * spec.height);
     for (std::uint32_t local = 0; local < a.frames; ++local, ++frame) {
       for (std::uint32_t y = 0; y < spec.height; ++y)
         for (std::uint32_t x = 0; x < spec.width; ++x) {
@@ -702,12 +839,29 @@ int wmain(int argc, wchar_t **argv) {
           p[i + 1] = ltr::bridge_probe::source_g(x, y, frame);
           p[i + 2] = ltr::bridge_probe::source_b(x, y, frame);
           p[i + 3] = 255U;
+          if (a.renderer_copy_mode == 3U)
+            p10[static_cast<std::size_t>(y) * spec.width + x] =
+                pack_r10g10b10a2(p[i], p[i + 1], p[i + 2]);
         }
-      if (a.renderer_copy_mode) {
+      if (a.renderer_copy_mode == 1U) {
         ctx->UpdateSubresource(renderer_source[g].Get(), 0, nullptr, p.data(),
                                spec.width * 4U, 0);
         ctx->End(copy_start[frame].Get());
         ctx->CopyResource(shared[g].Get(), renderer_source[g].Get());
+        ctx->End(copy_end[frame].Get());
+      } else if (a.renderer_copy_mode == 2U) {
+        ctx->UpdateSubresource(renderer_upload[g].Get(), 0, nullptr, p.data(),
+                               spec.width * 4U, 0);
+        draw_renderer_blit(g);
+        ctx->End(copy_start[frame].Get());
+        ctx->ResolveSubresource(shared[g].Get(), 0, renderer_source[g].Get(), 0,
+                                DXGI_FORMAT_R8G8B8A8_UNORM);
+        ctx->End(copy_end[frame].Get());
+      } else if (a.renderer_copy_mode == 3U) {
+        ctx->UpdateSubresource(renderer_source[g].Get(), 0, nullptr, p10.data(),
+                               spec.width * 4U, 0);
+        ctx->End(copy_start[frame].Get());
+        draw_renderer_blit(g);
         ctx->End(copy_end[frame].Get());
       } else {
         ctx->UpdateSubresource(shared[g].Get(), 0, nullptr, p.data(),
@@ -761,6 +915,7 @@ int wmain(int argc, wchar_t **argv) {
   double copy_sum_us = 0.0;
   double copy_min_us = std::numeric_limits<double>::max();
   double copy_max_us = 0.0;
+  double generation_copy_sum_us[ltr::bridge_probe::kGenerationCount]{};
   if (a.renderer_copy_mode) {
     ctx->End(copy_disjoint.Get());
     ctx->Flush();
@@ -803,27 +958,51 @@ int wmain(int argc, wchar_t **argv) {
       copy_sum_us += us;
       copy_min_us = std::min(copy_min_us, us);
       copy_max_us = std::max(copy_max_us, us);
+      generation_copy_sum_us[i / a.frames] += us;
     }
   }
   CloseHandle(fh);
-  std::cout << "producer_bitness=32 mode="
-            << (a.renderer_copy_mode ? "renderer-copy" : "multiframe")
+  const char *mode_name = "multiframe";
+  const char *transfer_kind = "none";
+  const char *source_format = "R8G8B8A8_UNORM";
+  std::uint32_t source_samples = 1U;
+  if (a.renderer_copy_mode == 1U) {
+    mode_name = "renderer-copy";
+    transfer_kind = "CopyResource";
+  } else if (a.renderer_copy_mode == 2U) {
+    mode_name = "renderer-resolve";
+    transfer_kind = "ResolveSubresource";
+    source_samples = 4U;
+  } else if (a.renderer_copy_mode == 3U) {
+    mode_name = "renderer-convert";
+    transfer_kind = "fullscreen-shader";
+    source_format = "R10G10B10A2_UNORM";
+  }
+  std::cout << "producer_bitness=32 mode=" << mode_name
             << " transport=open_host_created_d3d12_resource "
                "synchronization=shared_gpu_fence validation_cpu_readback=1\n"
             << "protocol_version=" << a.protocol
             << " generations=" << ltr::bridge_probe::kGenerationCount
             << " frames=" << total << " generation_size_transitions="
             << (ltr::bridge_probe::kGenerationCount - 1U)
-            << " mismatches=" << mismatches << "\n"
+            << " mismatches=" << mismatches
+            << " renderer_source_format=" << source_format
+            << " renderer_source_samples=" << source_samples
+            << " renderer_transfer_kind=" << transfer_kind << "\n"
             << std::fixed << std::setprecision(4)
             << "validation_round_trip_mean_ms=" << (sum / total)
             << " min_ms=" << minv << " max_ms=" << maxv << "\n";
   if (a.renderer_copy_mode) {
-    std::cout << "renderer_to_shared_gpu_copies=" << total
-              << " renderer_to_shared_gpu_copy_mean_us="
+    std::cout << "renderer_to_shared_gpu_transfers=" << total
+              << " renderer_to_shared_gpu_transfer_mean_us="
               << (copy_sum_us / static_cast<double>(total))
               << " min_us=" << copy_min_us << " max_us=" << copy_max_us
               << "\n";
+    for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g)
+      std::cout << "renderer_transfer_generation=" << g << " size="
+                << specs[g].width << "x" << specs[g].height << " mean_us="
+                << (generation_copy_sum_us[g] / static_cast<double>(a.frames))
+                << "\n";
   }
   if (mismatches) {
     std::cout << "RESULT FAIL\n";

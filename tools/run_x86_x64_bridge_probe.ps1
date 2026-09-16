@@ -55,6 +55,15 @@ Invoke-Checked $consumer @("--producer", $producer)
 Write-Host "=== renderer-local to shared-resource GPU-copy probe ==="
 Invoke-Checked $consumer @("--producer", $producer, "--renderer-copy")
 
+Write-Host "=== high-resolution renderer-copy probe: 1080p -> 4K ==="
+Invoke-Checked $consumer @("--producer", $producer, "--renderer-copy-highres")
+
+Write-Host "=== renderer MSAA4x resolve-to-shared probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--renderer-resolve-msaa4x")
+
+Write-Host "=== renderer R10 -> shared RGBA8 conversion probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--renderer-convert-r10")
+
 foreach ($negative in @(
     "protocol",
     "adapter",
