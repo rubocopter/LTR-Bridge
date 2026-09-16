@@ -43,6 +43,10 @@ The upstream explanation identifies three direct D3D10 limitations for its helpe
 
 **Verified platform nuance:** Microsoft documents legacy D3D10/DXGI shared resources and keyed-mutex synchronization for D3D10.1. Feeder reports that keyed-mutex creation returned `E_INVALIDARG` on tested modern hardware and therefore used event queries. This repository must treat that as an implementation/hardware observation, not as a universal invalidation of the documented API.
 
+**Implemented/host-tested locally:** a Win32 D3D10.1 device at feature level 10.0 now copies a local R10 render target into a legacy shared R10 relay, waits for `D3D10_QUERY_EVENT`, and exposes the relay to a same-adapter private D3D11 device. The standalone probe recreates `640x360 -> 1280x720` resources and five repeated runs pass with zero mismatches. The same route is integrated into the existing x86 -> x64 transport: D3D11 converts the opened R10 relay into the host-created shared RGBA8 resource and the x64 D3D12 host processes it. Five repeated 24-frame bridge runs pass with zero mismatches. Their D3D10 copy+event means were `0.1832–0.1902 ms` and the D3D11 conversion means `4.9053–5.2747 us`; these are synthetic single-host measurements, not performance validation.
+
+**Observed on the current host:** `D3D10_RESOURCE_MISC_SHARED_KEYEDMUTEX` resource creation returns `E_INVALIDARG` (`0x80070057`) on the RTX 4070 Ti, while the event-query route passes. This reproduces the upstream failure mode locally but remains hardware/driver scoped. Depth preservation, SM4-compatible motion generation, real renderer interception and broader hardware coverage remain experiment-pending.
+
 ### DLAA vs real Super Resolution
 
 **Observed upstream:** Feeder intentionally exposes a 1:1 DLAA-style temporal contract. Its `work_resolution` option is documented as a cost knob that downscales, processes, and re-expands; it is explicitly not real DLSS Quality/Balanced/Performance because the game renderer is not being driven at a lower internal resolution with proper jitter and temporal inputs.
@@ -197,7 +201,7 @@ Full case studies: `docs/CASE_STUDY_BIOSHOCK_VR.md` and `docs/CASE_STUDY_ROGUE_T
 
 The evidence now supports an x64 modern host as a reusable capability rather than an NVIDIA-specific workaround. Streamline targets 64-bit Windows, XeSS-SR is x64, and the inspected FidelityFX 2.3.0 signed DX12 runtime is x64. D3D12 therefore remains the best-supported first host for controlled cross-backend experiments without becoming a universal architectural requirement.
 
-The local probes have also moved several earlier hypotheses into **host-tested** territory: the D3D11 x64 temporal harness, GPU-resident D3D11 x86 -> D3D12 x64 transport, bounded queueing and failure handling, synthetic per-eye isolation/history, XeSS 3.0.2 Native AA execution, OpenXR runtime bootstrap, and the current-host D3D9Ex -> private D3D11 -> modern-host relay. These results are controlled and mostly synthetic; they do not establish real-game, multi-host, performance, OpenXR-presentation or headset support.
+The local probes have also moved several earlier hypotheses into **host-tested** territory: the D3D11 x64 temporal harness, GPU-resident D3D11 x86 -> D3D12 x64 transport, bounded queueing and failure handling, synthetic per-eye isolation/history, XeSS 3.0.2 Native AA execution, OpenXR runtime bootstrap, and the current-host D3D9Ex/D3D10.1 -> private D3D11 -> modern-host relays. These results are controlled and mostly synthetic; they do not establish real-game, multi-host, performance, OpenXR-presentation or headset support.
 
 The central unresolved problem remains temporal-data quality in real engines. Renderer-native camera/object motion is the strongest provenance seen in the case studies, camera+depth reconstruction is partial, and image-space optical flow is a lower-fidelity fallback/baseline. Coverage must be tracked independently because even native MV buffers can omit cloth, particles or other animated content. Real SR additionally requires renderer-resolution control, genuine projection jitter and validation of resolution-dependent engine behavior.
 
@@ -205,7 +209,7 @@ The central unresolved problem remains temporal-data quality in real engines. Re
 
 1. Put the proven scene capture behind an actual interception boundary around a separate D3D9Ex executable/game and verify call ordering/state preservation without direct control of the renderer.
 2. Compare that native D3D9Ex route with dgVoodoo2 on the same controlled target.
-3. Reproduce the D3D10 -> private D3D11 relay locally and measure its synchronization/copy behavior.
+3. Extend the D3D10 work from the proven color relay into depth preservation, an SM4-compatible temporal-data provider and a real interception boundary; repeat it on additional D3D10.0/10.1 hardware/driver configurations.
 4. Continue backend comparison from XeSS Native AA with DLSS/DLAA, FidelityFX and XeSS SR while preserving backend-specific optional inputs.
 5. Extend the motion-vector quality ladder to real skinned/cloth geometry, particles, transparency and independently moving first-person/VR objects.
 6. Establish renderer-resolution control and a render-stage/resolution-assumption matrix for real SR, including post-processing, HUD/highlights, particles/billboards, mip bias and secondary passes.

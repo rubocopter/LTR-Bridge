@@ -98,6 +98,11 @@ struct Options {
         return false;
       o.renderer_copy_mode = 5U;
       o.renderer_profile = L"d3d9ex-scene-relay";
+    } else if (k == L"--d3d10-relay") {
+      if (o.renderer_copy_mode)
+        return false;
+      o.renderer_copy_mode = 6U;
+      o.renderer_profile = L"d3d10-r10-relay";
     } else
       return false;
   }
@@ -155,7 +160,7 @@ int wmain(int argc, wchar_t **argv) {
            "--stereo-history|--stereo-history-swap] [--renderer-copy|"
            "--renderer-copy-highres|--renderer-resolve-msaa4x|"
            "--renderer-convert-r10|--d3d9ex-relay|"
-           "--d3d9ex-relay-highres|--d3d9ex-scene-relay]\n";
+           "--d3d9ex-relay-highres|--d3d9ex-scene-relay|--d3d10-relay]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -186,6 +191,9 @@ int wmain(int argc, wchar_t **argv) {
     specs[0] = {1920, 1080};
     specs[1] = {2560, 1440};
   } else if (o.renderer_profile == L"d3d9ex-scene-relay") {
+    specs[0] = {640, 360};
+    specs[1] = {1280, 720};
+  } else if (o.renderer_profile == L"d3d10-r10-relay") {
     specs[0] = {640, 360};
     specs[1] = {1280, 720};
   }
@@ -1026,6 +1034,9 @@ int wmain(int argc, wchar_t **argv) {
   } else if (o.renderer_copy_mode == 5U) {
     mode_name = "d3d9ex-scene-relay";
     transfer_kind = "d3d9ex-scene-bound-rt-relay-shader";
+  } else if (o.renderer_copy_mode == 6U) {
+    mode_name = "d3d10-relay";
+    transfer_kind = "d3d10-copy-event-relay-shader";
   }
   std::cout << "consumer_bitness=64 mode=" << mode_name
             << " ownership=host_created_d3d12_resource "

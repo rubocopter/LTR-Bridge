@@ -81,9 +81,9 @@ private D3D11 relay device (same adapter)
 x64 D3D12 helper
 ```
 
-This is an important candidate pattern, but local work must measure the additional copies and synchronization cost. It also needs testing across D3D10.0/10.1 devices and multiple drivers.
+**Implemented/host-tested on the current machine:** the local Win32 probe now reproduces this pattern with a D3D10.1 device at feature level 10.0. D3D10 copies a local R10 target into a legacy shared R10 relay and waits on `D3D10_QUERY_EVENT`; a same-adapter private D3D11 device opens the relay. The standalone probe recreates resources from `640x360` to `1280x720` with zero mismatches. The integrated bridge then converts that relay to the existing host-created RGBA8 transport and reaches the x64 D3D12 consumer. Five repeated 24-frame runs passed with zero mismatches and one generation transition. Their D3D10 copy+event means were `0.1832–0.1902 ms`, while the D3D11 R10-to-RGBA8 conversion means were `4.9053–5.2747 us`. These are short synthetic single-host measurements, not performance validation.
 
-Microsoft documents D3D10.1/DXGI keyed-mutex synchronization, while Feeder reports real-hardware failure to create keyed-mutex resources in its tested path and therefore uses event-query synchronization. LTR Bridge should probe the capability and log the observed result instead of assuming either behavior universally.
+Microsoft documents D3D10.1/DXGI keyed-mutex synchronization, while Feeder reports real-hardware failure to create keyed-mutex resources in its tested path and therefore uses event-query synchronization. The local capability probe also receives `E_INVALIDARG` while creating the keyed-mutex D3D10 resource on the current RTX 4070 Ti, so the passing local route uses event queries. This remains host/driver-scoped evidence; D3D10.0/10.1 variation and other hardware still require testing.
 
 ## D3D9 boundary
 

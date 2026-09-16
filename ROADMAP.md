@@ -77,11 +77,13 @@ For real SR, also validate insertion point and renderer-resolution side effects 
 
 ## Phase 4 — D3D10 probe
 
-Status: **planned**.
+Status: **legacy shared-resource relay, event-query synchronization and end-to-end x86 -> x64 transport implemented and host-tested on the current RTX 4070 Ti; keyed-mutex creation unavailable on this host; depth/MV/SM4 temporal-data and real-game integration pending**.
 
 Reproduce the useful architectural idea demonstrated by current DLSS5-Feeder: D3D10 game device -> legacy shared texture -> private D3D11 relay -> modern shared-resource path. Test whether this is robust beyond one implementation and one title.
 
 Also test Shader Model 4-compatible MV reconstruction paths and compare event-query synchronization with any keyed-mutex support actually observed on test hardware.
+
+Current-host result: a Win32 D3D10.1 device at feature level 10.0 renders deterministic R10 color, copies it into a `D3D10_RESOURCE_MISC_SHARED` R10 relay and waits for `D3D10_QUERY_EVENT`. A private same-adapter D3D11 device opens the relay and validates it across `640x360 -> 1280x720` recreation. Five standalone repetitions passed with zero mismatches. The same source route is integrated into the existing x86 -> x64 bridge through the D3D11 R10-to-RGBA8 fullscreen conversion; five 24-frame repetitions passed with one generation transition and zero mismatches. Across those bridge runs, the D3D10 copy+event CPU-wall mean averaged about `0.1866 ms` between run means and the D3D11 conversion about `5.0531 us`. These are short synthetic single-host measurements, not performance validation. A keyed-mutex capability probe returns `E_INVALIDARG` (`0x80070057`) during D3D10 resource creation on this host, so that path is recorded as unavailable rather than generalized as unsupported.
 
 ## Phase 5 — D3D9 architecture comparison
 

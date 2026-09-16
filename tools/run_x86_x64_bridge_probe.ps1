@@ -73,6 +73,9 @@ Invoke-Checked $consumer @("--producer", $producer, "--d3d9ex-relay-highres")
 Write-Host "=== controlled D3D9Ex scene -> bound RT relay -> x64 bridge probe ==="
 Invoke-Checked $consumer @("--producer", $producer, "--d3d9ex-scene-relay")
 
+Write-Host "=== D3D10 -> legacy shared R10 relay -> private D3D11 -> x64 bridge probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--d3d10-relay")
+
 foreach ($negative in @(
     "protocol",
     "adapter",
