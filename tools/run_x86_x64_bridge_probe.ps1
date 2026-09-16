@@ -91,3 +91,9 @@ Invoke-Checked $consumer @("--producer", $producer, "--stereo")
 
 Write-Host "=== negative probe: stereo contamination marker ==="
 Invoke-Checked $consumer @("--producer", $producer, "--stereo-contamination")
+
+Write-Host "=== stereo temporal-history probe ==="
+Invoke-Checked $consumer @("--producer", $producer, "--stereo-history")
+
+Write-Host "=== negative probe: stereo history swap ==="
+Invoke-Checked $consumer @("--producer", $producer, "--stereo-history-swap")

@@ -38,6 +38,7 @@ struct Arguments {
   std::uint32_t expect_host_termination = 0;
   std::uint32_t backpressure_depth = 0;
   std::uint32_t stereo_mode = 0;
+  std::uint32_t stereo_history_mode = 0;
 };
 [[nodiscard]] bool u32(const std::wstring &s, std::uint32_t &out) {
   try {
@@ -106,6 +107,9 @@ struct Arguments {
         return false;
     } else if (k == L"--stereo-mode") {
       if (!u32(v, a.stereo_mode) || a.stereo_mode > 1U)
+        return false;
+    } else if (k == L"--stereo-history-mode") {
+      if (!u32(v, a.stereo_history_mode) || a.stereo_history_mode > 1U)
         return false;
     } else
       return false;
@@ -342,6 +346,8 @@ int wmain(int argc, wchar_t **argv) {
     for (std::uint32_t temporal = 0; temporal < a.frames; ++temporal) {
       for (std::uint32_t eye = 0; eye < 2U; ++eye) {
         const std::uint32_t seed_frame = temporal + eye * 997U;
+        const std::uint32_t expected_seed_frame =
+            a.stereo_history_mode ? eye * 997U : seed_frame;
         for (std::uint32_t y = 0; y < spec.height; ++y)
           for (std::uint32_t x = 0; x < spec.width; ++x) {
             const std::size_t i =
@@ -391,13 +397,16 @@ int wmain(int argc, wchar_t **argv) {
             const auto *q = row + static_cast<std::size_t>(x) * 4U;
             const auto er = static_cast<std::uint8_t>(
                            255U -
-                           ltr::bridge_probe::source_r(x, y, seed_frame)),
+                           ltr::bridge_probe::source_r(x, y,
+                                                       expected_seed_frame)),
                        eg = static_cast<std::uint8_t>(
                            255U -
-                           ltr::bridge_probe::source_g(x, y, seed_frame)),
+                           ltr::bridge_probe::source_g(x, y,
+                                                       expected_seed_frame)),
                        eb = static_cast<std::uint8_t>(
                            255U -
-                           ltr::bridge_probe::source_b(x, y, seed_frame));
+                           ltr::bridge_probe::source_b(x, y,
+                                                       expected_seed_frame));
             if (q[3] == eye_marker[1U - eye])
               ++cross_eye_contamination;
             if (q[0] != er || q[1] != eg || q[2] != eb ||
@@ -412,7 +421,9 @@ int wmain(int argc, wchar_t **argv) {
     CloseHandle(fh);
     const std::uint32_t view_frames = a.frames * 2U;
     const bool passed = mismatches == 0 && cross_eye_contamination == 0;
-    std::cout << "producer_bitness=32 mode=stereo eyes=2 temporal_frames="
+    std::cout << "producer_bitness=32 mode="
+              << (a.stereo_history_mode ? "stereo-history" : "stereo")
+              << " eyes=2 temporal_frames="
               << a.frames << " view_frames=" << view_frames
               << " mismatches=" << mismatches
               << " cross_eye_contamination=" << cross_eye_contamination << "\n"

@@ -30,6 +30,8 @@ struct Options {
   std::uint32_t backpressure_depth = 0;
   bool stereo = false;
   bool stereo_contamination = false;
+  bool stereo_history = false;
+  bool stereo_history_swap = false;
 };
 [[nodiscard]] bool parse(int argc, wchar_t **argv, Options &o) {
   for (int i = 1; i < argc; ++i) {
@@ -52,6 +54,13 @@ struct Options {
     } else if (k == L"--stereo-contamination") {
       o.stereo = true;
       o.stereo_contamination = true;
+    } else if (k == L"--stereo-history") {
+      o.stereo = true;
+      o.stereo_history = true;
+    } else if (k == L"--stereo-history-swap") {
+      o.stereo = true;
+      o.stereo_history = true;
+      o.stereo_history_swap = true;
     } else
       return false;
   }
@@ -100,7 +109,8 @@ int wmain(int argc, wchar_t **argv) {
         << "usage: consumer --producer <x86-producer> [--negative "
            "protocol|adapter|resource-contract|host-stall|dynamic-control|"
            "client-termination|device-removal|host-termination]"
-           " [--backpressure-depth 1|2] [--stereo|--stereo-contamination]\n";
+           " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
+           "--stereo-history|--stereo-history-swap]\n";
     return 2;
   }
   ComPtr<ID3D12Device> dev;
@@ -249,7 +259,8 @@ int wmain(int argc, wchar_t **argv) {
       << ltr::bridge_probe::kFramesPerGeneration << L" --expect-host-stall "
       << expect_host_stall << L" --expect-host-termination "
       << expect_host_termination << L" --backpressure-depth "
-      << o.backpressure_depth << L" --stereo-mode " << (o.stereo ? 1U : 0U);
+      << o.backpressure_depth << L" --stereo-mode " << (o.stereo ? 1U : 0U)
+      << L" --stereo-history-mode " << (o.stereo_history ? 1U : 0U);
   std::wstring line = cmd.str();
   STARTUPINFOW si{};
   si.cb = sizeof(si);
@@ -358,7 +369,9 @@ int wmain(int argc, wchar_t **argv) {
     control_write = nullptr;
   }
   const char *shader_src =
-      o.stereo_contamination
+      o.stereo_history
+          ? R"(RWTexture2D<float4> Target:register(u0);RWTexture2D<float4> History:register(u1);cbuffer FrameState:register(b0){uint FirstFrame;}[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];float4 outv=FirstFrame!=0?float4(1.0-v.rgb,v.a):History[id.xy];Target[id.xy]=outv;History[id.xy]=outv;})"
+      : o.stereo_contamination
           ? R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,211.0/255.0);})"
           : R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,v.a);})";
   ComPtr<ID3DBlob> shader, errors;
@@ -369,7 +382,7 @@ int wmain(int argc, wchar_t **argv) {
     return 12;
   D3D12_DESCRIPTOR_RANGE range{};
   range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-  range.NumDescriptors = 1;
+  range.NumDescriptors = o.stereo_history ? 2U : 1U;
   range.BaseShaderRegister = 0;
   range.OffsetInDescriptorsFromTableStart =
       D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -377,9 +390,17 @@ int wmain(int argc, wchar_t **argv) {
   param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   param.DescriptorTable.NumDescriptorRanges = 1;
   param.DescriptorTable.pDescriptorRanges = &range;
+  D3D12_ROOT_PARAMETER history_param{};
+  if (o.stereo_history) {
+    history_param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    history_param.Constants.ShaderRegister = 0;
+    history_param.Constants.RegisterSpace = 0;
+    history_param.Constants.Num32BitValues = 1;
+  }
+  D3D12_ROOT_PARAMETER params[2] = {param, history_param};
   D3D12_ROOT_SIGNATURE_DESC rsd{};
-  rsd.NumParameters = 1;
-  rsd.pParameters = &param;
+  rsd.NumParameters = o.stereo_history ? 2U : 1U;
+  rsd.pParameters = params;
   ComPtr<ID3DBlob> rsblob, rserrors;
   if (!check(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1,
                                          &rsblob, &rserrors),
@@ -400,7 +421,7 @@ int wmain(int argc, wchar_t **argv) {
     return 15;
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  hd.NumDescriptors = ltr::bridge_probe::kGenerationCount;
+  hd.NumDescriptors = o.stereo_history ? 8U : ltr::bridge_probe::kGenerationCount;
   hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   ComPtr<ID3D12DescriptorHeap> dh;
   if (!check(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dh)),
@@ -408,17 +429,34 @@ int wmain(int argc, wchar_t **argv) {
     return 16;
   const UINT ds = dev->GetDescriptorHandleIncrementSize(
       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  const auto create_uav = [&](std::uint32_t g) {
+  const auto create_uav_at = [&](ID3D12Resource *resource, std::uint32_t index) {
     D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
     u.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     u.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     auto h = dh->GetCPUDescriptorHandleForHeapStart();
-    h.ptr += static_cast<SIZE_T>(g) * ds;
-    dev->CreateUnorderedAccessView(res[g].Get(), nullptr, &u, h);
+    h.ptr += static_cast<SIZE_T>(index) * ds;
+    dev->CreateUnorderedAccessView(resource, nullptr, &u, h);
   };
-  create_uav(0);
-  if (o.backpressure_depth == 2U || o.stereo)
-    create_uav(1);
+  ComPtr<ID3D12Resource> stereo_history[2];
+  if (o.stereo_history) {
+    for (std::uint32_t eye = 0; eye < 2U; ++eye) {
+      stereo_history[eye] = texture(dev.Get(), specs[0].width, specs[0].height);
+      if (!stereo_history[eye])
+        return 16;
+    }
+    create_uav_at(res[0].Get(), 0);
+    create_uav_at(stereo_history[0].Get(), 1);
+    create_uav_at(res[1].Get(), 2);
+    create_uav_at(stereo_history[1].Get(), 3);
+    create_uav_at(res[0].Get(), 4);
+    create_uav_at(stereo_history[1].Get(), 5);
+    create_uav_at(res[1].Get(), 6);
+    create_uav_at(stereo_history[0].Get(), 7);
+  } else {
+    create_uav_at(res[0].Get(), 0);
+    if (o.backpressure_depth == 2U || o.stereo)
+      create_uav_at(res[1].Get(), 1);
+  }
   const std::uint32_t total = ltr::bridge_probe::kFramesPerGeneration *
                               ltr::bridge_probe::kGenerationCount;
   D3D12_QUERY_HEAP_DESC qh{};
@@ -461,6 +499,15 @@ int wmain(int argc, wchar_t **argv) {
                    "CreateCommandList(stereo)"))
           return 20;
         auto *l = lists[frame].Get();
+        if (o.stereo_history && temporal == 0) {
+          D3D12_RESOURCE_BARRIER hb{};
+          hb.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+          hb.Transition.pResource = stereo_history[eye].Get();
+          hb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          hb.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+          hb.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+          l->ResourceBarrier(1, &hb);
+        }
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition.pResource = res[eye].Get();
@@ -473,16 +520,32 @@ int wmain(int argc, wchar_t **argv) {
         l->SetComputeRootSignature(root.Get());
         l->SetPipelineState(pso.Get());
         auto gh = dh->GetGPUDescriptorHandleForHeapStart();
-        gh.ptr += static_cast<UINT64>(eye) * ds;
+        const std::uint32_t descriptor_base =
+            o.stereo_history
+                ? (o.stereo_history_swap && temporal > 0 ? 4U + eye * 2U
+                                                         : eye * 2U)
+                : eye;
+        gh.ptr += static_cast<UINT64>(descriptor_base) * ds;
         l->SetComputeRootDescriptorTable(0, gh);
+        if (o.stereo_history)
+          l->SetComputeRoot32BitConstant(1, temporal == 0 ? 1U : 0U, 0);
         l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, frame * 2U);
         l->Dispatch((specs[0].width + 7U) / 8U, (specs[0].height + 7U) / 8U, 1);
         l->EndQuery(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                     frame * 2U + 1U);
-        D3D12_RESOURCE_BARRIER ub{};
-        ub.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        ub.UAV.pResource = res[eye].Get();
-        l->ResourceBarrier(1, &ub);
+        D3D12_RESOURCE_BARRIER ub[2]{};
+        ub[0].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        ub[0].UAV.pResource = res[eye].Get();
+        UINT ub_count = 1;
+        if (o.stereo_history) {
+          ub[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+          ub[1].UAV.pResource =
+              stereo_history[o.stereo_history_swap && temporal > 0 ? 1U - eye
+                                                                    : eye]
+                  .Get();
+          ub_count = 2;
+        }
+        l->ResourceBarrier(ub_count, ub);
         std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
         l->ResourceBarrier(1, &b);
         if (!check(l->Close(), "CommandListClose(stereo)"))
@@ -671,7 +734,7 @@ int wmain(int argc, wchar_t **argv) {
                      << L"\nRESULT PASS\n";
           return 0;
         }
-        create_uav(g);
+        create_uav_at(res[g].Get(), g);
         std::cout << "dynamic_resource_sent generation=" << g
                   << " size=" << specs[g].width << "x" << specs[g].height
                   << " after_completed_frame=" << frame << "\n";
@@ -781,6 +844,17 @@ int wmain(int argc, wchar_t **argv) {
         << producer_exit << " detector=cross_eye_marker\nRESULT PASS\n";
     return 0;
   }
+  if (o.stereo_history_swap) {
+    if (producer_exit != 25) {
+      std::cerr << "negative_mode=stereo-history-swap expected_exit=25 actual_exit="
+                << producer_exit << "\nRESULT FAIL\n";
+      return 31;
+    }
+    std::cout << "negative_mode=stereo-history-swap expected_exit=25 actual_exit="
+              << producer_exit
+              << " detector=per_eye_history_identity\nRESULT PASS\n";
+    return 0;
+  }
   if (producer_exit != 0) {
     std::cerr << "producer failed exit=" << producer_exit << "\n";
     return 31;
@@ -818,12 +892,15 @@ int wmain(int argc, wchar_t **argv) {
     return 0;
   }
   if (o.stereo) {
-    std::cout << "consumer_bitness=64 mode=stereo eyes=2 temporal_frames="
+    std::cout << "consumer_bitness=64 mode="
+              << (o.stereo_history ? "stereo-history" : "stereo")
+              << " eyes=2 temporal_frames="
               << ltr::bridge_probe::kFramesPerGeneration
               << " view_dispatches=" << total
               << " ownership=host_created_d3d12_resource "
                  "synchronization=independent_per_eye_fences "
-                 "transform=d3d12_compute_invert transport_gpu_copies=0\n"
+              << (o.stereo_history ? "history=independent_per_eye_gpu_uav " : "")
+              << "transform=d3d12_compute_invert transport_gpu_copies=0\n"
               << std::fixed << std::setprecision(3)
               << "host_gpu_compute_mean_us=" << (sum / total)
               << " min_us=" << minv << " max_us=" << maxv
