@@ -68,6 +68,37 @@ if(LTR_ENABLE_D3D9EX_SCENE_PROBE)
     endif()
 endif()
 
+option(LTR_ENABLE_D3D9EX_INTERCEPT_PROBE "Build the external D3D9Ex target + interception DLL probe" OFF)
+if(LTR_ENABLE_D3D9EX_INTERCEPT_PROBE)
+    if(NOT WIN32)
+        message(FATAL_ERROR "D3D9Ex interception probe requires Windows")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR "D3D9Ex interception probe currently targets Win32/x86")
+    endif()
+
+    add_executable(ltr_d3d9ex_intercept_target src/d3d9ex_intercept_probe/target.cpp)
+    target_compile_features(ltr_d3d9ex_intercept_target PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9ex_intercept_target PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(ltr_d3d9ex_intercept_target PRIVATE d3d9)
+    set_target_properties(ltr_d3d9ex_intercept_target PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/target-bin")
+
+    add_library(ltr_d3d9ex_interceptor SHARED
+        src/d3d9ex_intercept_probe/interceptor.cpp)
+    target_compile_features(ltr_d3d9ex_interceptor PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9ex_interceptor PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(ltr_d3d9ex_interceptor PRIVATE d3d11 dxgi)
+    set_target_properties(ltr_d3d9ex_interceptor PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/interceptor-bin"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/interceptor-lib")
+
+    if(MSVC)
+        target_compile_options(ltr_d3d9ex_intercept_target PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)
+        target_compile_options(ltr_d3d9ex_interceptor PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)
+    endif()
+endif()
+
 option(LTR_ENABLE_D3D10_D3D11_RELAY_PROBE "Build the D3D10.1 -> private D3D11 legacy shared-resource relay probe" OFF)
 if(LTR_ENABLE_D3D10_D3D11_RELAY_PROBE)
     if(NOT WIN32)
