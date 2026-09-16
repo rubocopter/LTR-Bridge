@@ -52,7 +52,28 @@ if (-not (Test-Path $producer) -or -not (Test-Path $consumer)) {
 Write-Host "=== positive multiframe/generation-size probe ==="
 Invoke-Checked $consumer @("--producer", $producer)
 
-foreach ($negative in @("protocol", "adapter", "resource-contract", "host-stall", "dynamic-control")) {
+foreach ($negative in @(
+    "protocol",
+    "adapter",
+    "resource-contract",
+    "host-stall",
+    "dynamic-control",
+    "client-termination",
+    "device-removal"
+)) {
     Write-Host "=== negative probe: $negative ==="
     Invoke-Checked $consumer @("--producer", $producer, "--negative", $negative)
+}
+
+Write-Host "=== negative probe: host-termination ==="
+$hostTerminationOutput = & $consumer --producer $producer --negative host-termination 2>&1
+$hostTerminationExit = $LASTEXITCODE
+$hostTerminationOutput | ForEach-Object { Write-Host $_ }
+$hostTerminationText = $hostTerminationOutput -join "`n"
+if ($hostTerminationExit -ne 24) {
+    throw "host-termination host exit was $hostTerminationExit instead of 24"
+}
+if ($hostTerminationText -notmatch "reject=host_terminated detected_by=process_handle" -or
+    $hostTerminationText -notmatch "RESULT PASS") {
+    throw "host-termination producer did not report clean host-loss detection"
 }

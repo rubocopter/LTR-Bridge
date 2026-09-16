@@ -79,7 +79,8 @@ int wmain(int argc, wchar_t **argv) {
   if (!parse(argc, argv, o)) {
     std::cerr
         << "usage: consumer --producer <x86-producer> [--negative "
-           "protocol|adapter|resource-contract|host-stall|dynamic-control]"
+           "protocol|adapter|resource-contract|host-stall|dynamic-control|"
+           "client-termination|device-removal|host-termination]"
            "\n";
     return 2;
   }
@@ -113,6 +114,16 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr << "CreatePipe(control) failed error=" << GetLastError() << "\n";
     return 6;
   }
+  HANDLE host_process_handle = nullptr;
+  if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
+                       GetCurrentProcess(), &host_process_handle, SYNCHRONIZE,
+                       TRUE, 0)) {
+    std::cerr << "DuplicateHandle(host-process) failed error=" << GetLastError()
+              << "\n";
+    CloseHandle(control_read);
+    CloseHandle(control_write);
+    return 6;
+  }
   if (!SetHandleInformation(control_write, HANDLE_FLAG_INHERIT, 0)) {
     std::cerr << "SetHandleInformation(control-write) failed error="
               << GetLastError() << "\n";
@@ -137,6 +148,7 @@ int wmain(int argc, wchar_t **argv) {
   DWORD expected = 0;
   bool deferred_negative = false;
   std::uint32_t expect_host_stall = 0;
+  std::uint32_t expect_host_termination = 0;
   if (o.negative == L"protocol") {
     ++protocol;
     expected = 3;
@@ -152,6 +164,14 @@ int wmain(int argc, wchar_t **argv) {
   } else if (o.negative == L"dynamic-control") {
     expected = 19;
     deferred_negative = true;
+  } else if (o.negative == L"client-termination") {
+    expected = 21;
+    deferred_negative = true;
+  } else if (o.negative == L"device-removal") {
+    expected = 19;
+    deferred_negative = true;
+  } else if (o.negative == L"host-termination") {
+    expect_host_termination = 1;
   } else if (!o.negative.empty()) {
     std::cerr << "unknown negative mode\n";
     return 7;
@@ -168,12 +188,16 @@ int wmain(int argc, wchar_t **argv) {
       << L" --control-read-handle "
       << static_cast<unsigned long long>(
              reinterpret_cast<std::uintptr_t>(control_read))
+      << L" --host-process-handle "
+      << static_cast<unsigned long long>(
+             reinterpret_cast<std::uintptr_t>(host_process_handle))
       << L" --width0 " << specs[0].width << L" --height0 " << specs[0].height
       << L" --ready-fence-name " << quote(ready_fence_name) << L" --luid-low "
       << luid.LowPart << L" --luid-high " << luid.HighPart
       << L" --protocol-version " << protocol << L" --frames-per-generation "
       << ltr::bridge_probe::kFramesPerGeneration << L" --expect-host-stall "
-      << expect_host_stall;
+      << expect_host_stall << L" --expect-host-termination "
+      << expect_host_termination;
   std::wstring line = cmd.str();
   STARTUPINFOW si{};
   si.cb = sizeof(si);
@@ -184,8 +208,11 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr << "CreateProcessW failed error=" << GetLastError() << "\n";
     CloseHandle(control_read);
     CloseHandle(control_write);
+    CloseHandle(host_process_handle);
     return 8;
   }
+  CloseHandle(host_process_handle);
+  host_process_handle = nullptr;
   CloseHandle(control_read);
   control_read = nullptr;
   CloseHandle(rh[0]);
@@ -224,6 +251,27 @@ int wmain(int argc, wchar_t **argv) {
     return 11;
   }
   CloseHandle(fh);
+  if (o.negative == L"host-termination") {
+    HANDLE ready_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!ready_event)
+      return 11;
+    if (!check(ready_fence->SetEventOnCompletion(1, ready_event),
+               "SetEventOnCompletion(host-termination-ready)")) {
+      CloseHandle(ready_event);
+      return 11;
+    }
+    const DWORD ready_wait = WaitForSingleObject(ready_event, 10000);
+    CloseHandle(ready_event);
+    if (ready_wait != WAIT_OBJECT_0) {
+      std::cerr << "host-termination producer-ready wait failed\n";
+      return 11;
+    }
+    std::cout << "negative_mode=host-termination producer_pid="
+              << pi.dwProcessId << " host_exit=24\n"
+              << std::flush;
+    TerminateProcess(GetCurrentProcess(), 24);
+    return 24;
+  }
   const char *shader_src =
       R"(RWTexture2D<float4> Target:register(u0);[numthreads(8,8,1)]void main(uint3 id:SV_DispatchThreadID){float4 v=Target[id.xy];Target[id.xy]=float4(1.0-v.rgb,v.a);})";
   ComPtr<ID3DBlob> shader, errors;
@@ -326,6 +374,52 @@ int wmain(int argc, wchar_t **argv) {
       CloseHandle(transition_event);
 
       res[0].Reset();
+      if (o.negative == L"client-termination") {
+        if (!TerminateProcess(pi.hProcess, expected)) {
+          std::cerr << "TerminateProcess(client) failed error="
+                    << GetLastError() << "\n";
+          return 19;
+        }
+        CloseHandle(control_write);
+        control_write = nullptr;
+        const DWORD code = wait_process(pi, 10000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        if (code != expected) {
+          std::wcerr << L"negative_mode=" << o.negative << L" expected_exit="
+                     << expected << L" actual_exit=" << code
+                     << L"\nRESULT FAIL\n";
+          return 19;
+        }
+        std::wcout << L"negative_mode=" << o.negative << L" expected_exit="
+                   << expected << L" actual_exit=" << code
+                   << L" cleanup=completed\nRESULT PASS\n";
+        return 0;
+      }
+      if (o.negative == L"device-removal") {
+        ComPtr<ID3D12Device5> dev5;
+        if (!check(dev.As(&dev5), "ID3D12Device5"))
+          return 19;
+        dev5->RemoveDevice();
+        const HRESULT removed = dev->GetDeviceRemovedReason();
+        CloseHandle(control_write);
+        control_write = nullptr;
+        const DWORD code = wait_process(pi, 10000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        if (SUCCEEDED(removed) || code != expected) {
+          std::cerr << "negative_mode=device-removal device_removed_hr=0x"
+                    << std::hex << static_cast<unsigned long>(removed)
+                    << std::dec << " expected_producer_exit=" << expected
+                    << " actual_producer_exit=" << code << "\nRESULT FAIL\n";
+          return 19;
+        }
+        std::cout << "negative_mode=device-removal device_removed_hr=0x"
+                  << std::hex << static_cast<unsigned long>(removed) << std::dec
+                  << " producer_exit=" << code
+                  << " cleanup=completed\nRESULT PASS\n";
+        return 0;
+      }
       res[g] = texture(dev.Get(), specs[g].width, specs[g].height);
       if (!res[g])
         return 19;

@@ -25,12 +25,14 @@ struct Arguments {
   HANDLE resource0_handle{};
   HANDLE done_fence_handle{};
   HANDLE control_read_handle{};
+  HANDLE host_process_handle{};
   ltr::bridge_probe::GenerationSpec spec0{};
   std::wstring ready_fence_name;
   LUID luid{};
   std::uint32_t protocol = 0;
   std::uint32_t frames = 0;
   std::uint32_t expect_host_stall = 0;
+  std::uint32_t expect_host_termination = 0;
 };
 [[nodiscard]] bool u32(const std::wstring &s, std::uint32_t &out) {
   try {
@@ -63,6 +65,9 @@ struct Arguments {
     else if (k == L"--control-read-handle")
       a.control_read_handle =
           reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--host-process-handle")
+      a.host_process_handle =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
     else if (k == L"--ready-fence-name")
       a.ready_fence_name = v;
     else if (k == L"--luid-low") {
@@ -80,12 +85,15 @@ struct Arguments {
     } else if (k == L"--expect-host-stall") {
       if (!u32(v, a.expect_host_stall) || a.expect_host_stall > 1U)
         return false;
+    } else if (k == L"--expect-host-termination") {
+      if (!u32(v, a.expect_host_termination) || a.expect_host_termination > 1U)
+        return false;
     } else
       return false;
   }
   return a.resource0_handle && a.done_fence_handle && a.control_read_handle &&
-         a.spec0.width && a.spec0.height && !a.ready_fence_name.empty() &&
-         low && high && a.frames;
+         a.host_process_handle && a.spec0.width && a.spec0.height &&
+         !a.ready_fence_name.empty() && low && high && a.frames;
 }
 [[nodiscard]] bool contract(ID3D11Texture2D *tex,
                             const ltr::bridge_probe::GenerationSpec &e,
@@ -185,6 +193,48 @@ int wmain(int argc, wchar_t **argv) {
   }
   CloseHandle(a.done_fence_handle);
   a.done_fence_handle = nullptr;
+  if (a.expect_host_termination) {
+    if (!check(ctx4->Signal(ready_fence.Get(), 1),
+               "Signal(host-termination-ready)")) {
+      CloseHandle(a.host_process_handle);
+      CloseHandle(fh);
+      return 13;
+    }
+    ctx->Flush();
+    HANDLE done_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!done_event) {
+      CloseHandle(a.host_process_handle);
+      CloseHandle(fh);
+      return 13;
+    }
+    if (!check(done_fence->SetEventOnCompletion(1, done_event),
+               "SetEventOnCompletion(host-termination)")) {
+      CloseHandle(done_event);
+      CloseHandle(a.host_process_handle);
+      CloseHandle(fh);
+      return 13;
+    }
+    HANDLE waits[] = {done_event, a.host_process_handle};
+    const DWORD wait = WaitForMultipleObjects(2, waits, FALSE, 10000);
+    const DWORD host_state = WaitForSingleObject(
+        a.host_process_handle, wait == WAIT_OBJECT_0 ? 250 : 0);
+    CloseHandle(done_event);
+    CloseHandle(a.host_process_handle);
+    a.host_process_handle = nullptr;
+    CloseHandle(fh);
+    if (host_state == WAIT_OBJECT_0) {
+      std::cout << "reject=host_terminated detected_by=process_handle"
+                   " fence_wait_result="
+                << wait
+                << "\n"
+                   "RESULT PASS\n";
+      return 22;
+    }
+    std::cerr << "host-termination probe failed wait=" << wait << "\n";
+    return 23;
+  }
+  CloseHandle(a.host_process_handle);
+  a.host_process_handle = nullptr;
   if (a.expect_host_stall) {
     if (!check(ctx4->Signal(ready_fence.Get(), 1),
                "Signal(host-stall-ready)")) {
