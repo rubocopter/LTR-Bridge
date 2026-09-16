@@ -92,6 +92,7 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 - OpenXR 1.1 specification/man pages: https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html
 - `xrWaitFrame`: https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrWaitFrame.html
 - Khronos `hello_xr` reference implementation: https://github.com/KhronosGroup/OpenXR-SDK-Source/blob/main/src/tests/hello_xr/openxr_program.cpp
+- Khronos `OpenXR-SDK` headers used by the local bootstrap probe: `release-1.1.63`, commit `f2448a8797c85814aa892efc1ab8707900fbcc78` (2026-09-01), https://github.com/KhronosGroup/OpenXR-SDK
 - Relevance: authoritative evidence for per-view recommended extents, `predictedDisplayTime`, and locating per-view poses for the same target display time before frame submission.
 
 ## dgVoodoo2

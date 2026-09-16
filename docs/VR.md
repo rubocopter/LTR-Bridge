@@ -1,6 +1,6 @@
 # VR research
 
-Status: **planned; OFXR Bridge presentation architecture reviewed, controlled integration still experiment-pending**.
+Status: **OpenXR runtime/bootstrap probe implemented and host-tested; OFXR Bridge presentation architecture reviewed; graphics-session/pacing integration and physical-headset validation remain experiment-pending**.
 
 The architecture must preserve one temporal input and one history per rendered view. A future VR integration should reconstruct each eye before final runtime composition rather than treating a combined stereo image as one temporal stream.
 
@@ -15,6 +15,16 @@ For LTR Bridge this supports keeping `predicted_display_time` and view/eye ident
 The controlled stereo experiment must test independent histories, rapid camera rotation/translation, near geometry, independently moving hands or tools, animated geometry, particles, frame pacing, added latency, history resets, and binocular consistency.
 
 It must also log the OpenXR predicted display time used for the view poses, the source of current/previous eye transforms, reconstruction start/end timing, and the image extent actually submitted for each view. This is needed to distinguish reconstruction artifacts from pose-prediction or frame-pacing errors.
+
+## Local OpenXR runtime bootstrap — 2026-09-16
+
+**Implemented/host-tested:** `src/openxr_runtime_probe/` is a standalone x64 bootstrap probe. It uses an external Khronos OpenXR SDK checkout for headers only and dynamically loads the installed OpenXR loader, keeping this experiment independent from the x86/x64 transport probe and from OFXR Bridge. The tested headers are OpenXR SDK `release-1.1.63`, commit `f2448a8797c85814aa892efc1ab8707900fbcc78`.
+
+**Observed on the current host:** the active runtime registry points to SteamVR. Two consecutive runs loaded SteamVR's x64 OpenXR loader and observed `SteamVR/OpenXR` runtime version `2.17.10`, `41` instance extensions, `XR_KHR_D3D11_enable=1` and `XR_KHR_D3D12_enable=1`. An initial OpenXR `1.1.63` instance request returned `XR_ERROR_API_VERSION_UNSUPPORTED` (`-4`); retrying with OpenXR `1.0.0` succeeded.
+
+**Observed current-machine limitation:** `xrGetSystem(XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY)` returned `XR_ERROR_FORM_FACTOR_UNAVAILABLE` (`-35`) on both repeated runs. The probe therefore stopped before view-configuration enumeration and D3D11/D3D12 graphics-requirement LUID queries. This is useful host-runtime bootstrap evidence, but it is not a graphics-session, frame-pacing, presentation, scanout or `vr-headset-validated` result.
+
+When an HMD system is available, the same probe is already structured to enumerate `XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO`, record each view's recommended extent/sample count, query `xrGetD3D11GraphicsRequirementsKHR` and `xrGetD3D12GraphicsRequirementsKHR`, and compare their required adapter LUIDs. Only after that prerequisite passes should a separate experiment add a graphics session, swapchains and `xrWaitFrame`/`xrBeginFrame`/`xrEndFrame` pacing.
 
 
 ## OFXR Bridge presentation evidence

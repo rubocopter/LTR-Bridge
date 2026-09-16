@@ -34,6 +34,40 @@ if(LTR_ENABLE_X86_X64_BRIDGE_PROBE)
     endif()
 endif()
 
+option(LTR_ENABLE_OPENXR_RUNTIME_PROBE "Build the optional x64 OpenXR runtime/bootstrap probe" OFF)
+set(LTR_OPENXR_SDK_ROOT "" CACHE PATH "Path to an external Khronos OpenXR SDK checkout")
+
+if(LTR_ENABLE_OPENXR_RUNTIME_PROBE)
+    if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "ltr_openxr_runtime_probe requires 64-bit Windows")
+    endif()
+    if(NOT LTR_OPENXR_SDK_ROOT)
+        message(FATAL_ERROR "LTR_OPENXR_SDK_ROOT must point to an external Khronos OpenXR SDK checkout")
+    endif()
+    set(_ltr_openxr_header "${LTR_OPENXR_SDK_ROOT}/include/openxr/openxr.h")
+    set(_ltr_openxr_platform_header "${LTR_OPENXR_SDK_ROOT}/include/openxr/openxr_platform.h")
+    foreach(_required IN ITEMS "${_ltr_openxr_header}" "${_ltr_openxr_platform_header}")
+        if(NOT EXISTS "${_required}")
+            message(FATAL_ERROR "Required OpenXR SDK header not found: ${_required}")
+        endif()
+    endforeach()
+
+    add_executable(ltr_openxr_runtime_probe src/openxr_runtime_probe/probe.cpp)
+    target_compile_features(ltr_openxr_runtime_probe PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_openxr_runtime_probe PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        XR_USE_PLATFORM_WIN32
+        XR_USE_GRAPHICS_API_D3D11
+        XR_USE_GRAPHICS_API_D3D12
+        XR_NO_PROTOTYPES)
+    target_include_directories(ltr_openxr_runtime_probe PRIVATE "${LTR_OPENXR_SDK_ROOT}/include")
+    target_link_libraries(ltr_openxr_runtime_probe PRIVATE dxgi)
+    if(MSVC)
+        target_compile_options(ltr_openxr_runtime_probe PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)
+    endif()
+endif()
+
 option(LTR_ENABLE_XESS_NATIVE_AA_PROBE "Build the optional XeSS Native AA D3D12 probe" OFF)
 set(LTR_XESS_SDK_ROOT "" CACHE PATH "Path to an external Intel XeSS SDK checkout")
 set(LTR_XESS_PROBE_WIDTH "256" CACHE STRING "XeSS Native AA probe width")

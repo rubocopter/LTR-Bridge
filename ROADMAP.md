@@ -113,9 +113,11 @@ Use the same controlled D3D8 target to compare native interception, `d3d8to9` fo
 
 ## Phase 7 — controlled stereo/OpenXR harness
 
-Status: **planned**.
+Status: **runtime/bootstrap probe implemented and host-tested; graphics session, frame loop, pacing, swapchain lifecycle and physical-headset validation remain planned**.
 
 Two independent eye targets, histories, matrices, depth and MVs. Measure temporal divergence, latency, and submission order before trying a real VR mod.
+
+Current bootstrap evidence: a standalone x64 probe using external Khronos OpenXR SDK `1.1.63` headers (`f2448a8797c85814aa892efc1ab8707900fbcc78`) dynamically loads the active SteamVR OpenXR loader. On the current host SteamVR/OpenXR runtime `2.17.10` rejects an OpenXR `1.1.63` application request with `XR_ERROR_API_VERSION_UNSUPPORTED` and succeeds when the probe retries at OpenXR `1.0.0`. It exposes both `XR_KHR_D3D11_enable` and `XR_KHR_D3D12_enable`. The current machine state returned `XR_ERROR_FORM_FACTOR_UNAVAILABLE` for `XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY` on repeated runs, so no system ID, per-view recommended extents, graphics-adapter requirements, session, `xrWaitFrame`, swapchain or headset result has been promoted from this probe. The next OpenXR experiment starts only once an HMD system is available to the runtime.
 
 ## Phase 8 — VR mod validation
 
