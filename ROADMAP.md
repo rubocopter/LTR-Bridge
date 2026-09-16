@@ -69,7 +69,7 @@ A renderer-transfer matrix now keeps the same RGBA8 cross-process contract while
 
 ## Phase 3 — backend comparison
 
-Status: **planned**.
+Status: **started: XeSS 3.0.2 Native AA on D3D12 x64 is implemented and host-tested at 1.0x with coherent harness jitter/MV semantics and a responsive-mask experiment; DLSS/DLAA, FidelityFX, XeSS SR, cross-backend contract comparison and real-content validation remain pending**.
 
 Run the controlled contract through at least DLAA/DLSS-compatible integration, FidelityFX temporal upscaling, and XeSS Native AA/SR where the available SDK/API path permits it. Document non-common inputs instead of hiding them.
 
@@ -94,7 +94,7 @@ Start with a minimal API-interop probe before attempting reconstruction:
 - [x] verify first-host format behavior, pixel contents, explicit event-query synchronization and resource recreation;
 - [x] copy from a local D3D9Ex render target into the relay texture with `StretchRect` and account for completion cost;
 - [x] exercise D3D9Ex `ResetEx` and relay-resource recreation;
-- [x] feed the D3D11 relay into the existing x86 -> x64 D3D12 transport path.
+- [x] feed the D3D11 relay into the existing x86 -> x64 D3D12 transport path;
 - [x] repeat the integrated route with a bound D3D9Ex render target at `1920x1080 -> 2560x1440` and preserve reset/recreation plus deterministic validation.
 
 Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares `A2B10G10R10 -> R10G10B10A2_UNORM` and `A16B16G16R16F -> R16G16B16A16_FLOAT` with D3D11; the documented `A8B8G8R8 -> R8G8B8A8_UNORM` case fails here, while an out-of-document `A8R8G8B8 -> B8G8R8A8_UNORM` control succeeds. The independent probe drives a local D3D9Ex render target into the shareable relay with `StretchRect`, waits on `D3DQUERYTYPE_EVENT`, performs one `ResetEx`, recreates `64x64 -> 96x72`, and validates 12 frames with zero mismatches. The integrated bridge route now binds the R10 render target, clears it through D3D9Ex render-target state, restores the default target, copies to the relay, opens it in private x86 D3D11, converts to the existing shared RGBA8 transport with a fullscreen shader, then completes the established x86 -> x64 D3D12 path. Five dedicated runs of both the tiny and `1920x1080 -> 2560x1440` profiles completed 24 frames with one reset, one generation transition and zero mismatches. For the current bound-render-target implementation, the tiny profile averaged about `0.2647 ms` for the D3D9Ex bind/clear/restore/`StretchRect`/event interval and `1.9701 us` for the D3D11 relay-to-RGBA8 shader; the high-resolution profile averaged about `0.3637 ms` and `19.5638 us` respectively across run means. R10 validation permits `rgb8_plus_minus_1_lsb` because D3D9 render-target quantization can differ by one 8-bit LSB from the synthetic reference. These are controlled synthetic single-host measurements, not performance validation.

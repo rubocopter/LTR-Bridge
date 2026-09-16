@@ -12,7 +12,7 @@ The first research pass supports a **candidate** layered design:
 
 `legacy renderer -> API adapter -> temporal data provider -> optional transport -> modern host -> reconstruction backend -> game/VR output`
 
-That shape is plausible but not yet validated as a universal architecture. The strongest reusable pattern observed so far is the cross-bitness GPU-resource bridge used by DLSS5-Feeder: a 32-bit client can keep frame data on the GPU while a 64-bit helper executes modern work, provided the source API can reach shareable resources and synchronization primitives either directly or through an intermediate API device.
+That shape is plausible but not yet validated as a universal architecture. The cross-bitness GPU-resource pattern first identified in DLSS5-Feeder is now independently host-tested here: a 32-bit D3D11 client can keep frame data on the GPU while a 64-bit D3D12 helper executes modern work, with live resource replacement, bounded queueing, failure handling and synthetic per-eye isolation. The same modern transport is also reached from the current-host D3D9Ex relay through a private x86 D3D11 conversion step.
 
 The largest unresolved problem is not calling an upscaler. It is producing trustworthy temporal inputs from engines that were never designed for them, especially dense motion vectors, correct depth, projection jitter, history resets, and independent per-eye state for VR.
 
@@ -53,7 +53,7 @@ This order is a research hypothesis, not a permanent product architecture.
 
 Repository claims use explicit maturity states: `planned`, `implemented`, `host-tested`, `live-tested`, `visual-validated`, `performance-validated`, `vr-headset-validated`, and `supported`.
 
-As of 2026-09-16 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline, an optional host-tested XeSS Native AA probe, and a host-tested multiframe D3D11 x86 -> D3D12 x64 transport probe. No production injector is implemented.
+As of 2026-09-16 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline, a host-tested XeSS Native AA probe, a host-tested multiframe D3D11 x86 -> D3D12 x64 transport probe, a current-host D3D9Ex -> D3D11 -> modern-host relay, and an isolated host-tested OpenXR runtime/bootstrap probe. No production injector, real-game integration, OpenXR presentation path, physical-headset validation, or performance-validated support claim is implemented.
 
 ## License
 

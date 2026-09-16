@@ -77,7 +77,7 @@ This is particularly reusable. LTR Bridge's provisional contract already include
 
 **Verified:** upstream contains a game-independent synthetic `bvr-stereo-client32` test. It exercises a 32-bit D3D11 client, two independent x64 hosts, separate pipes/resources/fences/histories, 300 frames per eye, DLAA and SR, and readback patterns designed to detect cross-eye contamination. A second runtime test uses the real `dlss45_client.cpp` and frozen x64 host/runtime without starting BioShock or OpenXR.
 
-**Conclusion for LTR Bridge:** this is directly relevant to the planned D3D11 x86 -> x64 probe. The useful idea is not to copy BioShock's IPC ABI, but to add stereo contamination checks, independent eye histories, deterministic readback, transition/recovery tests and bounded helper shutdown to our transport probe from the beginning.
+**Conclusion for LTR Bridge:** this directly informed the local D3D11 x86 -> D3D12 x64 bridge. The local probe now independently implements deterministic stereo contamination checks, independent eye resources/fences and per-eye GPU histories, dynamic resource replacement, failure-path diagnostics and bounded host-loss handling without copying BioShock's IPC ABI. BioShock remains upstream evidence for a real game/backend integration; LTR Bridge's corresponding results are still controlled synthetic transport/history evidence.
 
 ## Validation level
 

@@ -6,8 +6,8 @@ States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`,
 
 | Source API / architecture | Direct interception | Translation/relay | x86 -> x64 helper | Native-res temporal AA | Real temporal SR | VR | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| D3D11 x64, in process | planned | not required for first probe | not required | planned | unknown | unknown | Primary SDKs support modern D3D11 paths; local harness not built. |
-| D3D11 x86 -> D3D12 x64 host | planned | no translation expected | observed-upstream | unknown | unknown | unknown | DLSS5-Feeder demonstrates GPU-resident cross-bitness transport. |
+| D3D11 x64 controlled harness | implemented | not required | not required | host-tested | unknown | unknown | Local harness is implemented, host-tested and visual-validated for controlled temporal cases. The separate D3D12 XeSS 3.0.2 probe executes Native AA at 1.0x with coherent jitter/MV semantics; this is still synthetic evidence, not a game integration. |
+| D3D11 x86 -> D3D12 x64 host | planned game interception | no translation expected | host-tested | unknown | unknown | host-tested synthetic stereo transport | Local bridge validates repeated frames, live resource replacement, bounded backpressure, failure paths, renderer-to-shared transfers through 4K, per-eye isolation and independent synthetic per-eye histories. No reconstruction backend or OpenXR presentation is connected to this transport yet. |
 | D3D10 x86 -> D3D11 relay -> x64 host | planned | observed-upstream relay | observed-upstream | unknown | unknown | unknown | Current DLSS5-Feeder D3D10 route. |
 | D3D10 direct to modern host | unknown | n/a | unknown | unknown | unknown | unknown | D3D10 lacks the D3D11 NT-handle/fence path used by current bridge designs. |
 | D3D9 classic -> D3D11 relay | host-tested negative boundary | current-host shared creation rejected | unknown | unknown | unknown | unknown | Win32 probe: all tested `CreateTexture(..., pSharedHandle)` cases return `D3DERR_INVALIDCALL` on the current RTX 4070 Ti host; five repetitions stable. Do not generalize beyond this host/runtime. |
@@ -15,7 +15,7 @@ States: `unknown`, `observed-upstream`, `planned`, `implemented`, `host-tested`,
 | D3D9 -> dgVoodoo2 -> D3D11 | planned comparison | observed-upstream | observed-upstream downstream | observed-upstream in Feeder-style stack | not demonstrated as real SR | unknown | Existing community tooling uses this route. |
 | D3D8 native | unknown | planned | unknown | unknown | unknown | unknown | Requires D3D8-specific investigation. |
 | D3D8 -> dgVoodoo2 -> D3D11 | planned | observed in ecosystem | possible downstream | unknown | unknown | unknown | Deployment tools use this route; LTR Bridge has not validated it. |
-| Stereo/OpenXR controlled harness | n/a | n/a | optional | planned | unknown | planned | No local prototype yet. |
+| Stereo/OpenXR controlled harness | n/a | n/a | host-tested transport | unknown | unknown | OpenXR bootstrap host-tested | Two-eye transport/history isolation is host-tested. A separate OpenXR bootstrap negotiates with SteamVR and confirms D3D11/D3D12 extensions, but the current runs had no HMD system, so graphics-session, swapchain, pacing, presentation and headset execution remain pending. |
 
 ## Backend/API observations
 
