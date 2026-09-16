@@ -1,218 +1,301 @@
 #include "common.h"
-
-#include <windows.h>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <d3d11_4.h>
 #include <dxgi1_4.h>
-#include <wrl/client.h>
-
-#include <cstdint>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
-
+#include <windows.h>
+#include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
-
 namespace {
-
-[[nodiscard]] bool check(HRESULT result, const char* what) {
-    if (SUCCEEDED(result)) {
-        return true;
-    }
-    std::cerr << what << " failed hr=0x" << std::hex
-              << static_cast<unsigned long>(result) << std::dec << "\n";
-    return false;
+[[nodiscard]] bool check(HRESULT hr, const char *what) {
+  if (SUCCEEDED(hr))
+    return true;
+  std::cerr << what << " failed hr=0x" << std::hex
+            << static_cast<unsigned long>(hr) << std::dec << "\n";
+  return false;
 }
-
 struct Arguments {
-    HANDLE resource_handle{};
-    std::wstring fence_name;
-    LUID luid{};
+  HANDLE handles[ltr::bridge_probe::kGenerationCount]{};
+  HANDLE done_fence_handle{};
+  ltr::bridge_probe::GenerationSpec
+      specs[ltr::bridge_probe::kGenerationCount]{};
+  std::wstring ready_fence_name;
+  LUID luid{};
+  std::uint32_t protocol = 0;
+  std::uint32_t frames = 0;
+  std::uint32_t expect_host_stall = 0;
 };
-
-[[nodiscard]] bool parse_arguments(int argc, wchar_t** argv, Arguments& args) {
-    bool low_seen = false;
-    bool high_seen = false;
-    for (int i = 1; i + 1 < argc; i += 2) {
-        const std::wstring_view key(argv[i]);
-        const std::wstring value(argv[i + 1]);
-        if (key == L"--resource-handle") {
-            args.resource_handle = reinterpret_cast<HANDLE>(
-                static_cast<std::uintptr_t>(std::stoull(value)));
-        } else if (key == L"--fence-name") {
-            args.fence_name = value;
-        } else if (key == L"--luid-low") {
-            args.luid.LowPart = static_cast<DWORD>(std::stoul(value));
-            low_seen = true;
-        } else if (key == L"--luid-high") {
-            args.luid.HighPart = static_cast<LONG>(std::stol(value));
-            high_seen = true;
-        } else {
-            return false;
-        }
-    }
-    return args.resource_handle != nullptr && !args.fence_name.empty() && low_seen && high_seen;
+[[nodiscard]] bool u32(const std::wstring &s, std::uint32_t &out) {
+  try {
+    const auto v = std::stoull(s);
+    if (v > std::numeric_limits<std::uint32_t>::max())
+      return false;
+    out = static_cast<std::uint32_t>(v);
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
-
-}  // namespace
-
-int wmain(int argc, wchar_t** argv) {
-    static_assert(sizeof(void*) == 4, "producer must be built x86");
-
-    Arguments args{};
-    if (!parse_arguments(argc, argv, args)) {
-        std::wcerr << L"invalid arguments\n";
-        return 2;
+[[nodiscard]] bool parse(int argc, wchar_t **argv, Arguments &a) {
+  bool low = false, high = false;
+  for (int i = 1; i + 1 < argc; i += 2) {
+    const std::wstring_view k(argv[i]);
+    const std::wstring v(argv[i + 1]);
+    if (k == L"--resource0-handle")
+      a.handles[0] =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--resource1-handle")
+      a.handles[1] =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--width0") {
+      if (!u32(v, a.specs[0].width))
+        return false;
+    } else if (k == L"--height0") {
+      if (!u32(v, a.specs[0].height))
+        return false;
+    } else if (k == L"--width1") {
+      if (!u32(v, a.specs[1].width))
+        return false;
+    } else if (k == L"--height1") {
+      if (!u32(v, a.specs[1].height))
+        return false;
+    } else if (k == L"--done-fence-handle")
+      a.done_fence_handle =
+          reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(v)));
+    else if (k == L"--ready-fence-name")
+      a.ready_fence_name = v;
+    else if (k == L"--luid-low") {
+      a.luid.LowPart = static_cast<DWORD>(std::stoul(v));
+      low = true;
+    } else if (k == L"--luid-high") {
+      a.luid.HighPart = static_cast<LONG>(std::stol(v));
+      high = true;
+    } else if (k == L"--protocol-version") {
+      if (!u32(v, a.protocol))
+        return false;
+    } else if (k == L"--frames-per-generation") {
+      if (!u32(v, a.frames))
+        return false;
+    } else if (k == L"--expect-host-stall") {
+      if (!u32(v, a.expect_host_stall) || a.expect_host_stall > 1U)
+        return false;
+    } else
+      return false;
+  }
+  return a.handles[0] && a.handles[1] && a.done_fence_handle &&
+         a.specs[0].width && a.specs[0].height && a.specs[1].width &&
+         a.specs[1].height && !a.ready_fence_name.empty() && low && high &&
+         a.frames;
+}
+[[nodiscard]] bool contract(ID3D11Texture2D *tex,
+                            const ltr::bridge_probe::GenerationSpec &e,
+                            std::uint32_t gen) {
+  D3D11_TEXTURE2D_DESC d{};
+  tex->GetDesc(&d);
+  if (d.Width != e.width || d.Height != e.height ||
+      d.Format != DXGI_FORMAT_R8G8B8A8_UNORM || d.MipLevels != 1 ||
+      d.ArraySize != 1 || d.SampleDesc.Count != 1) {
+    std::cerr << "reject=resource_contract generation=" << gen
+              << " expected=" << e.width << "x" << e.height
+              << " actual=" << d.Width << "x" << d.Height
+              << " format=" << static_cast<unsigned>(d.Format)
+              << " samples=" << d.SampleDesc.Count << "\n";
+    return false;
+  }
+  return true;
+}
+} // namespace
+int wmain(int argc, wchar_t **argv) {
+  static_assert(sizeof(void *) == 4, "producer must be built x86");
+  Arguments a{};
+  if (!parse(argc, argv, a)) {
+    std::cerr << "reject=arguments\n";
+    return 2;
+  }
+  if (a.protocol != ltr::bridge_probe::kProtocolVersion) {
+    std::cerr << "reject=protocol_version expected="
+              << ltr::bridge_probe::kProtocolVersion << " actual=" << a.protocol
+              << "\n";
+    return 3;
+  }
+  ComPtr<IDXGIFactory4> factory;
+  if (!check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)),
+             "CreateDXGIFactory2"))
+    return 4;
+  ComPtr<IDXGIAdapter> adapter;
+  if (!check(factory->EnumAdapterByLuid(a.luid, IID_PPV_ARGS(&adapter)),
+             "EnumAdapterByLuid")) {
+    std::cerr << "reject=adapter_luid\n";
+    return 5;
+  }
+  ComPtr<ID3D11Device> dev;
+  ComPtr<ID3D11DeviceContext> ctx;
+  D3D_FEATURE_LEVEL fl{};
+  if (!check(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                               D3D11_SDK_VERSION, &dev, &fl, &ctx),
+             "D3D11CreateDevice"))
+    return 6;
+  ComPtr<ID3D11Device1> dev1;
+  ComPtr<ID3D11Device5> dev5;
+  ComPtr<ID3D11DeviceContext4> ctx4;
+  if (!check(dev.As(&dev1), "ID3D11Device1") ||
+      !check(dev.As(&dev5), "ID3D11Device5") ||
+      !check(ctx.As(&ctx4), "ID3D11DeviceContext4"))
+    return 7;
+  ComPtr<ID3D11Texture2D> shared[ltr::bridge_probe::kGenerationCount],
+      staging[ltr::bridge_probe::kGenerationCount];
+  for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
+    if (!check(
+            dev1->OpenSharedResource1(a.handles[g], IID_PPV_ARGS(&shared[g])),
+            "OpenSharedResource1"))
+      return 8;
+    if (!contract(shared[g].Get(), a.specs[g], g))
+      return 9;
+    D3D11_TEXTURE2D_DESC d{};
+    shared[g]->GetDesc(&d);
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    d.MiscFlags = 0;
+    if (!check(dev->CreateTexture2D(&d, nullptr, &staging[g]),
+               "CreateTexture2D(staging)"))
+      return 10;
+  }
+  ComPtr<ID3D11Fence> ready_fence, done_fence;
+  if (!check(dev5->CreateFence(
+                 0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
+                 reinterpret_cast<void **>(ready_fence.GetAddressOf())),
+             "CreateFence(ready)"))
+    return 11;
+  HANDLE fh = nullptr;
+  if (!check(ready_fence->CreateSharedHandle(nullptr, GENERIC_ALL,
+                                             a.ready_fence_name.c_str(), &fh),
+             "CreateSharedHandle(ready-fence)"))
+    return 12;
+  if (!check(dev5->OpenSharedFence(
+                 a.done_fence_handle, __uuidof(ID3D11Fence),
+                 reinterpret_cast<void **>(done_fence.GetAddressOf())),
+             "OpenSharedFence(done)")) {
+    CloseHandle(fh);
+    return 12;
+  }
+  if (a.expect_host_stall) {
+    if (!check(ctx4->Signal(ready_fence.Get(), 1),
+               "Signal(host-stall-ready)")) {
+      CloseHandle(fh);
+      return 13;
     }
-
-    ComPtr<IDXGIFactory4> factory;
-    if (!check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2")) {
-        return 3;
+    ctx->Flush();
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!event) {
+      CloseHandle(fh);
+      return 13;
     }
-
-    ComPtr<IDXGIAdapter> adapter;
-    if (!check(factory->EnumAdapterByLuid(args.luid, IID_PPV_ARGS(&adapter)), "EnumAdapterByLuid")) {
-        return 4;
+    if (!check(done_fence->SetEventOnCompletion(1, event),
+               "SetEventOnCompletion(host-stall)")) {
+      CloseHandle(event);
+      CloseHandle(fh);
+      return 13;
     }
-
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    D3D_FEATURE_LEVEL feature_level{};
-    if (!check(D3D11CreateDevice(
-            adapter.Get(),
-            D3D_DRIVER_TYPE_UNKNOWN,
-            nullptr,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            nullptr,
-            0,
-            D3D11_SDK_VERSION,
-            &device,
-            &feature_level,
-            &context),
-        "D3D11CreateDevice")) {
-        return 5;
+    const DWORD wait = WaitForSingleObject(event, 250);
+    CloseHandle(event);
+    CloseHandle(fh);
+    if (wait == WAIT_TIMEOUT) {
+      std::cout << "reject=host_stall timeout_ms=250\n";
+      return 17;
     }
-
-    ComPtr<ID3D11Device1> device1;
-    ComPtr<ID3D11Device5> device5;
-    ComPtr<ID3D11DeviceContext4> context4;
-    if (!check(device.As(&device1), "ID3D11Device1") ||
-        !check(device.As(&device5), "ID3D11Device5") ||
-        !check(context.As(&context4), "ID3D11DeviceContext4")) {
-        return 6;
-    }
-
-    ComPtr<ID3D11Texture2D> shared_texture;
-    if (!check(device1->OpenSharedResource1(
-            args.resource_handle,
-            IID_PPV_ARGS(&shared_texture)),
-        "OpenSharedResource1")) {
-        return 7;
-    }
-
-    ComPtr<ID3D11Fence> fence;
-    if (!check(device5->CreateFence(
-            0,
-            D3D11_FENCE_FLAG_SHARED,
-            __uuidof(ID3D11Fence),
-            reinterpret_cast<void**>(fence.GetAddressOf())),
-        "CreateFence")) {
-        return 8;
-    }
-    HANDLE fence_handle = nullptr;
-    if (!check(fence->CreateSharedHandle(
-            nullptr,
-            GENERIC_ALL,
-            args.fence_name.c_str(),
-            &fence_handle),
-        "CreateSharedHandle(fence)")) {
-        return 9;
-    }
-
-    std::vector<std::uint8_t> pixels(
-        static_cast<std::size_t>(ltr::bridge_probe::kWidth) * ltr::bridge_probe::kHeight * 4U);
-    for (std::uint32_t y = 0; y < ltr::bridge_probe::kHeight; ++y) {
-        for (std::uint32_t x = 0; x < ltr::bridge_probe::kWidth; ++x) {
-            const std::size_t i =
-                (static_cast<std::size_t>(y) * ltr::bridge_probe::kWidth + x) * 4U;
-            pixels[i + 0] = ltr::bridge_probe::source_r(x, y);
-            pixels[i + 1] = ltr::bridge_probe::source_g(x, y);
-            pixels[i + 2] = ltr::bridge_probe::source_b(x, y);
-            pixels[i + 3] = 255U;
+    std::cerr << "host-stall probe unexpectedly completed wait=" << wait
+              << "\n";
+    return 18;
+  }
+  std::uint64_t mismatches = 0;
+  double sum = 0.0, minv = std::numeric_limits<double>::max(), maxv = 0.0;
+  std::uint32_t frame = 0;
+  for (std::uint32_t g = 0; g < ltr::bridge_probe::kGenerationCount; ++g) {
+    const auto spec = a.specs[g];
+    std::vector<std::uint8_t> p(static_cast<std::size_t>(spec.width) *
+                                spec.height * 4U);
+    for (std::uint32_t local = 0; local < a.frames; ++local, ++frame) {
+      for (std::uint32_t y = 0; y < spec.height; ++y)
+        for (std::uint32_t x = 0; x < spec.width; ++x) {
+          const std::size_t i =
+              (static_cast<std::size_t>(y) * spec.width + x) * 4U;
+          p[i] = ltr::bridge_probe::source_r(x, y, frame);
+          p[i + 1] = ltr::bridge_probe::source_g(x, y, frame);
+          p[i + 2] = ltr::bridge_probe::source_b(x, y, frame);
+          p[i + 3] = 255U;
         }
-    }
-
-    context->UpdateSubresource(
-        shared_texture.Get(),
-        0,
-        nullptr,
-        pixels.data(),
-        ltr::bridge_probe::kWidth * 4U,
-        0);
-    if (!check(context4->Signal(fence.Get(), ltr::bridge_probe::kProducerReadyFence),
-        "Signal(producer-ready)")) {
-        CloseHandle(fence_handle);
-        return 10;
-    }
-    context->Flush();
-
-    if (!check(context4->Wait(fence.Get(), ltr::bridge_probe::kConsumerDoneFence),
-        "Wait(consumer-done)")) {
-        CloseHandle(fence_handle);
-        return 11;
-    }
-
-    D3D11_TEXTURE2D_DESC staging_desc{};
-    shared_texture->GetDesc(&staging_desc);
-    staging_desc.Usage = D3D11_USAGE_STAGING;
-    staging_desc.BindFlags = 0;
-    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    staging_desc.MiscFlags = 0;
-
-    ComPtr<ID3D11Texture2D> staging;
-    if (!check(device->CreateTexture2D(&staging_desc, nullptr, &staging),
-        "CreateTexture2D(staging)")) {
-        CloseHandle(fence_handle);
-        return 12;
-    }
-
-    context->CopyResource(staging.Get(), shared_texture.Get());
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (!check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map(staging)")) {
-        CloseHandle(fence_handle);
+      ctx->UpdateSubresource(shared[g].Get(), 0, nullptr, p.data(),
+                             spec.width * 4U, 0);
+      const auto start = std::chrono::steady_clock::now();
+      if (!check(ctx4->Signal(ready_fence.Get(),
+                              static_cast<std::uint64_t>(frame) + 1ULL),
+                 "Signal(producer-ready)")) {
+        CloseHandle(fh);
         return 13;
-    }
-
-    std::uint64_t mismatches = 0;
-    for (std::uint32_t y = 0; y < ltr::bridge_probe::kHeight; ++y) {
-        const auto* row = static_cast<const std::uint8_t*>(mapped.pData) +
-            static_cast<std::size_t>(y) * mapped.RowPitch;
-        for (std::uint32_t x = 0; x < ltr::bridge_probe::kWidth; ++x) {
-            const auto* pixel = row + static_cast<std::size_t>(x) * 4U;
-            const std::uint8_t expected_r =
-                static_cast<std::uint8_t>(255U - ltr::bridge_probe::source_r(x, y));
-            const std::uint8_t expected_g =
-                static_cast<std::uint8_t>(255U - ltr::bridge_probe::source_g(x, y));
-            const std::uint8_t expected_b =
-                static_cast<std::uint8_t>(255U - ltr::bridge_probe::source_b(x, y));
-            if (pixel[0] != expected_r || pixel[1] != expected_g ||
-                pixel[2] != expected_b || pixel[3] != 255U) {
-                ++mismatches;
-            }
-        }
-    }
-    context->Unmap(staging.Get(), 0);
-    CloseHandle(fence_handle);
-
-    std::cout << "producer_bitness=32 transport=open_host_created_d3d12_resource "
-                 "synchronization=shared_gpu_fence validation_cpu_readback=1\n";
-    std::cout << "pixels=" << (ltr::bridge_probe::kWidth * ltr::bridge_probe::kHeight)
-              << " mismatches=" << mismatches << "\n";
-    if (mismatches != 0) {
-        std::cout << "RESULT FAIL\n";
+      }
+      ctx->Flush();
+      if (!check(ctx4->Wait(done_fence.Get(),
+                            static_cast<std::uint64_t>(frame) + 1ULL),
+                 "Wait(consumer-done)")) {
+        CloseHandle(fh);
         return 14;
+      }
+      ctx->CopyResource(staging[g].Get(), shared[g].Get());
+      D3D11_MAPPED_SUBRESOURCE m{};
+      if (!check(ctx->Map(staging[g].Get(), 0, D3D11_MAP_READ, 0, &m),
+                 "Map(staging)")) {
+        CloseHandle(fh);
+        return 15;
+      }
+      const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
+      sum += ms;
+      minv = std::min(minv, ms);
+      maxv = std::max(maxv, ms);
+      for (std::uint32_t y = 0; y < spec.height; ++y) {
+        const auto *row = static_cast<const std::uint8_t *>(m.pData) +
+                          static_cast<std::size_t>(y) * m.RowPitch;
+        for (std::uint32_t x = 0; x < spec.width; ++x) {
+          const auto *q = row + static_cast<std::size_t>(x) * 4U;
+          const auto er = static_cast<std::uint8_t>(
+                         255U - ltr::bridge_probe::source_r(x, y, frame)),
+                     eg = static_cast<std::uint8_t>(
+                         255U - ltr::bridge_probe::source_g(x, y, frame)),
+                     eb = static_cast<std::uint8_t>(
+                         255U - ltr::bridge_probe::source_b(x, y, frame));
+          if (q[0] != er || q[1] != eg || q[2] != eb || q[3] != 255U)
+            ++mismatches;
+        }
+      }
+      ctx->Unmap(staging[g].Get(), 0);
     }
-
-    std::cout << "RESULT PASS\n";
-    return 0;
+  }
+  CloseHandle(fh);
+  const std::uint32_t total = a.frames * ltr::bridge_probe::kGenerationCount;
+  std::cout << "producer_bitness=32 transport=open_host_created_d3d12_resource "
+               "synchronization=shared_gpu_fence validation_cpu_readback=1\n"
+            << "protocol_version=" << a.protocol
+            << " generations=" << ltr::bridge_probe::kGenerationCount
+            << " frames=" << total << " generation_size_transitions="
+            << (ltr::bridge_probe::kGenerationCount - 1U)
+            << " mismatches=" << mismatches << "\n"
+            << std::fixed << std::setprecision(4)
+            << "validation_round_trip_mean_ms=" << (sum / total)
+            << " min_ms=" << minv << " max_ms=" << maxv << "\n";
+  if (mismatches) {
+    std::cout << "RESULT FAIL\n";
+    return 16;
+  }
+  std::cout << "RESULT PASS\n";
+  return 0;
 }

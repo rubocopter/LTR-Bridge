@@ -47,7 +47,7 @@ Current foundation: the standalone x64 D3D11 harness now provides 1:1 scene colo
 
 ## Phase 2 — D3D11 x86 -> x64 bridge probe
 
-Status: **minimal round-trip implemented and host-tested; lifecycle/performance/stereo expansion pending**.
+Status: **multiframe transport implemented and host-tested with a controlled size-generation transition, first timing/copy accounting and negative-path diagnostics; dynamic lifecycle/backpressure/stereo expansion pending**.
 
 Goal: validate GPU-resident cross-bitness transport independently of a reconstruction SDK.
 
@@ -63,7 +63,7 @@ Probe shape:
 
 Measure copies, stalls, queue waits, resize, process failure, adapter identity, and cleanup.
 
-Current foundation: an x64 D3D12 host now creates a shared committed texture and launches an x86 D3D11 client on the same adapter. The client opens the resource, uploads a deterministic `64x64` pattern, and synchronizes with a D3D11-created shared fence opened by D3D12. The host performs an in-place D3D12 compute inversion, signals completion, and the x86 client validates all `4096` pixels with zero mismatches. Pixel data remains GPU-resident across the process boundary; CPU readback is used only for final test verification. This is **host-tested** transport evidence, not yet a production protocol.
+Current foundation: the x64 D3D12 host creates two shared resource generations (`64x64` and `96x72`) and launches an x86 D3D11 client on the same adapter. The client runs 12 deterministic frames per generation and validates all 24 transformed frames with zero mismatches. The multiframe path uses separate unidirectional shared fences: D3D11 signals `ready`, D3D12 signals `done`. The x64 transform is in-place (`0` transport GPU copies); one x86 GPU copy per frame exists only for staging/readback validation. Across five additional positive runs, per-run mean D3D12 compute time averaged `3.558 us` (`3.499–3.669 us` between run means) and per-run mean validation signal-to-readback wall time averaged `1.5022 ms` (`1.3372–1.6114 ms` between run means). These remain short single-host/synthetic measurements rather than performance validation. Protocol mismatch, adapter mismatch, resource-contract mismatch and a `250 ms` host-stall timeout are deterministic negative tests. The two size generations are pre-created before launch, so dynamic handle replacement/rebuild, real process/device loss, backpressure and stereo remain pending.
 
 ## Phase 3 — backend comparison
 

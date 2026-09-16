@@ -12,6 +12,7 @@ function Invoke-Checked {
         [Parameter(Mandatory = $true)][string]$Program,
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
+
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Program failed with exit code $LASTEXITCODE"
@@ -48,7 +49,10 @@ if (-not (Test-Path $producer) -or -not (Test-Path $consumer)) {
     throw "bridge probe executables were not produced"
 }
 
-& $consumer --producer $producer
-if ($LASTEXITCODE -ne 0) {
-    throw "x86/x64 bridge probe failed with exit code $LASTEXITCODE"
+Write-Host "=== positive multiframe/generation-size probe ==="
+Invoke-Checked $consumer @("--producer", $producer)
+
+foreach ($negative in @("protocol", "adapter", "resource-contract", "host-stall")) {
+    Write-Host "=== negative probe: $negative ==="
+    Invoke-Checked $consumer @("--producer", $producer, "--negative", $negative)
 }

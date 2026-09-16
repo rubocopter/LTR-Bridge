@@ -20,7 +20,7 @@ The largest unresolved problem is not calling an upscaler. It is producing trust
 
 The controlled D3D11 x64 harness foundation is implemented and host-tested. It renders known 1:1 scenarios with projection jitter, shader-readable depth, renderer-ground-truth motion, explicit history resets, provisional view identity, content/history diagnostics, camera+depth reconstruction and an independent synthetic optical-flow baseline.
 
-The first optional real backend probe is also implemented: XeSS SDK 3.0.2 Native AA executes at 1.0x on D3D12 x64 against deterministic synthetic inputs. It now shares the harness's Halton jitter sequence and motion convention (current-to-previous render-pixel MV with jitter excluded), exercises XeSS's responsive-pixel mask, and records first-host GPU timestamp plus temporary-heap measurements. Repeated Native AA measurements cover 256x144 through 3840x2160 on the same host. The first cross-bitness transport probe is also host-tested: an x64 D3D12 host-created texture is opened and populated by an x86 D3D11 client, transformed on D3D12, and verified back in x86 with zero pixel mismatches. These remain controlled host results, not general support or performance validation.
+The first optional real backend probe is also implemented: XeSS SDK 3.0.2 Native AA executes at 1.0x on D3D12 x64 against deterministic synthetic inputs. It now shares the harness's Halton jitter sequence and motion convention (current-to-previous render-pixel MV with jitter excluded), exercises XeSS's responsive-pixel mask, and records first-host GPU timestamp plus temporary-heap measurements. Repeated Native AA measurements cover 256x144 through 3840x2160 on the same host. The cross-bitness transport probe now runs 24 verified frames across two pre-created resource sizes, uses separate D3D11-ready/D3D12-done fences, records first timing/copy measurements and exercises protocol, adapter, resource-contract and host-stall negative paths. These remain controlled host results, not general support or performance validation.
 
 This order is a research hypothesis, not a permanent product architecture.
 
@@ -48,7 +48,7 @@ This order is a research hypothesis, not a permanent product architecture.
 
 Repository claims use explicit maturity states: `planned`, `implemented`, `host-tested`, `live-tested`, `visual-validated`, `performance-validated`, `vr-headset-validated`, and `supported`.
 
-As of 2026-09-16 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline, an optional host-tested XeSS Native AA probe, and a host-tested minimal D3D11 x86 -> D3D12 x64 transport round trip. No production injector is implemented.
+As of 2026-09-16 the repository contains the controlled D3D11 x64 research harness, independent optical-flow baseline, an optional host-tested XeSS Native AA probe, and a host-tested multiframe D3D11 x86 -> D3D12 x64 transport probe. No production injector is implemented.
 
 ## License
 
