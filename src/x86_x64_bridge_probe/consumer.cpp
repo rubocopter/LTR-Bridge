@@ -73,8 +73,9 @@ struct Options {
          (!o.renderer_copy || (o.negative.empty() && o.backpressure_depth == 0U &&
                                !o.stereo));
 }
-[[nodiscard]] ComPtr<ID3D12Resource> texture(ID3D12Device *d, std::uint32_t w,
-                                             std::uint32_t h) {
+[[nodiscard]] ComPtr<ID3D12Resource>
+texture(ID3D12Device *d, std::uint32_t w, std::uint32_t h,
+        DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM) {
   D3D12_HEAP_PROPERTIES hp{};
   hp.Type = D3D12_HEAP_TYPE_DEFAULT;
   D3D12_RESOURCE_DESC r{};
@@ -83,7 +84,7 @@ struct Options {
   r.Height = h;
   r.DepthOrArraySize = 1;
   r.MipLevels = 1;
-  r.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  r.Format = format;
   r.SampleDesc.Count = 1;
   r.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
   r.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
@@ -113,10 +114,11 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr
         << "usage: consumer --producer <x86-producer> [--negative "
            "protocol|adapter|resource-contract|host-stall|dynamic-control|"
-            "client-termination|device-removal|host-termination|"
-            "backpressure-host-termination]"
-            " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
-            "--stereo-history|--stereo-history-swap] [--renderer-copy]\n";
+           "format-rgba16f|format-rgba32f|format-rgba8uint|client-termination|"
+           "device-removal|host-termination|"
+           "backpressure-host-termination]"
+           " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
+           "--stereo-history|--stereo-history-swap] [--renderer-copy]\n";
     return 2;
   }
   if (o.negative == L"backpressure-host-termination")
@@ -138,8 +140,15 @@ int wmain(int argc, wchar_t **argv) {
   SECURITY_ATTRIBUTES sa{};
   sa.nLength = sizeof(sa);
   sa.bInheritHandle = TRUE;
+  DXGI_FORMAT resource_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  if (o.negative == L"format-rgba16f")
+    resource_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  else if (o.negative == L"format-rgba32f")
+    resource_format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  else if (o.negative == L"format-rgba8uint")
+    resource_format = DXGI_FORMAT_R8G8B8A8_UINT;
   res[0] = texture(dev.Get(), ltr::bridge_probe::kGenerations[0].width,
-                   ltr::bridge_probe::kGenerations[0].height);
+                   ltr::bridge_probe::kGenerations[0].height, resource_format);
   if (!res[0])
     return 5;
   if (!check(dev->CreateSharedHandle(res[0].Get(), &sa, GENERIC_ALL, nullptr,
@@ -218,6 +227,13 @@ int wmain(int argc, wchar_t **argv) {
     expected = 5;
   } else if (o.negative == L"resource-contract") {
     ++specs[0].width;
+    expected = 9;
+  } else if (o.negative == L"format-rgba32f") {
+    // On the current host D3D11 rejects the D3D12 shared resource before the
+    // producer can inspect its descriptor, so this is an interop-open negative.
+    expected = 8;
+  } else if (o.negative == L"format-rgba16f" ||
+             o.negative == L"format-rgba8uint") {
     expected = 9;
   } else if (o.negative == L"host-stall") {
     expect_host_stall = 1;
