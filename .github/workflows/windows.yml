@@ -1,4 +1,4 @@
-name: Windows harness
+name: Windows validation
 
 on:
   push:
@@ -26,3 +26,22 @@ jobs:
             build/src/optical_flow/ltr_optical_flow_probe.txt
             build/src/optical_flow/ltr_diag_optical_*.bmp
           if-no-files-found: warn
+
+  optional-probe-compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Win32 native probes
+        run: >-
+          cmake -S . -B build-probes-x86 -A Win32
+          -DLTR_ENABLE_X86_X64_BRIDGE_PROBE=ON
+          -DLTR_ENABLE_D3D9_D3D11_SHARE_PROBE=ON
+          -DLTR_ENABLE_D3D9EX_SCENE_PROBE=ON
+          -DLTR_ENABLE_D3D9EX_INTERCEPT_PROBE=ON
+          -DLTR_ENABLE_D3D10_D3D11_RELAY_PROBE=ON
+      - name: Build Win32 native probes
+        run: cmake --build build-probes-x86 --config Release
+      - name: Configure x64 bridge consumer
+        run: cmake -S . -B build-probes-x64 -A x64 -DLTR_ENABLE_X86_X64_BRIDGE_PROBE=ON
+      - name: Build x64 bridge consumer
+        run: cmake --build build-probes-x64 --config Release --target ltr_x86_x64_bridge_consumer

@@ -4,6 +4,8 @@ Status: **hypothesis informed by current evidence**.
 
 The architecture should preserve four boundaries until experiments show that combining them is beneficial: source-renderer observation, temporal-data production, transport, and reconstruction execution.
 
+The current research has proved each boundary in isolation far enough that the next risk is integration rather than another horizontal capability probe. Probe implementations are evidence generators, not production components: validation readbacks, synchronous logging, global hook state, target-fatal assertions and proof-oriented waits must not be copied unchanged into a real renderer path.
+
 ## 1. Legacy API Adapter
 
 Responsibilities:
@@ -95,11 +97,40 @@ The following decisions remain deliberately open:
 | Decision | Evidence required before committing |
 | --- | --- |
 | ReShade as a required layer | At least two source APIs and one non-ReShade path compared for access, coexistence, and latency. |
-| dgVoodoo2 as default legacy route | The current-host classic-D3D9/D3D9Ex boundary is now probed. Compare the proven native D3D9Ex relay with dgVoodoo2 on the same controlled renderer for depth, transform/MV visibility, compatibility, scheduling and frame-time behavior. |
+| dgVoodoo2 as default legacy route | The controlled comparison is complete. Compare native D3D9Ex observation and dgVoodoo2 on the same real game for original depth/transform/MV provenance, compatibility, scheduling and frame-time behavior; the proven D3D12 addon presentation callback alone is not temporal-input evidence. |
 | D3D12 as universal host | Backend/API matrix showing another host cannot provide equivalent capability or materially lowers portability. |
 | Single universal backend interface | DLSS, FSR, and XeSS contract comparison with optional features represented without semantic loss. |
 | Optical flow as general MV fallback | Visual and temporal validation including animated geometry, particles, disocclusion, and VR head motion. |
 | Shared monitor/VR pipeline | Independent synthetic per-eye transport/history is now host-tested; an OpenXR graphics session, frame pacing, presentation and physical-headset binocular validation are still required. |
+
+## Next validation gate: one real vertical slice
+
+The next experiment should connect the already-proven pieces through one real D3D9Ex title before adding another source API or reconstruction backend:
+
+```text
+real D3D9Ex renderer
+        |
+        v
+per-device / per-swapchain observation
+        |
+        v
+TemporalFrame semantics
+        |
+        v
+x86 -> x64 GPU transport
+        |
+        v
+XeSS Native AA 1:1
+        |
+        v
+game output
+```
+
+Success means the same frame identity, resource generation, reset state, color/depth/MV semantics and history validity can be followed through the complete route. The real adapter must fail open: loss or rejection of reconstruction may disable the experiment, but it must not deliberately fail the game's renderer.
+
+Keep validation and runtime responsibilities separate. CPU readback, pixel-by-pixel verification and synchronous callback logging remain diagnostic tools. Any synchronization retained in the frame path must be justified by measurements from the real integration rather than inherited from a probe.
+
+Use XeSS Native AA first because its backend contract already executes locally at 1:1. Backend comparison, SR, D3D10/D3D8 expansion and OpenXR session work resume after this vertical gate exposes which abstractions are actually reusable.
 
 ## Architectural risks
 
@@ -109,3 +140,4 @@ The following decisions remain deliberately open:
 4. **D3D10 sits between generations.** It can share legacy DXGI resources but lacks D3D11.1 NT handles, D3D11-style fences, and UAV capability needed by modern output paths.
 5. **Super Resolution changes the renderer.** Real SR requires control over internal render resolution, projection jitter, resource extents, post-processing, and UI composition; post-process downscale/re-upscale is not equivalent.
 6. **VR amplifies latency and temporal mistakes.** Per-eye divergence and head-motion errors can be uncomfortable even if screenshots look sharp.
+7. **Probe lifecycle assumptions are intentionally weak.** Current controlled hooks can rely on global state, cooperative loading and simple device lifetimes. A real adapter needs per-device/per-swapchain ownership, reset-safe resource generations, bounded teardown and fail-open behavior before it can be treated as runtime architecture.

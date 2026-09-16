@@ -19,4 +19,4 @@ This repository is an independent research project for temporal reconstruction o
 
 ## Current phase
 
-Research and repository bootstrap only. Minimal probes are allowed when needed to resolve a specific uncertainty. Do not build a production injector yet.
+Research and vertical-integration experiments only. The next gate is one minimal real-game D3D9Ex path that connects renderer observation, temporal semantics, transport, and one reconstruction backend. Minimal probes and narrowly scoped integration code are allowed when needed to resolve a specific uncertainty. Do not build a production injector yet.

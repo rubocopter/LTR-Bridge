@@ -6,7 +6,9 @@ Updated: 2026-09-16.
 
 The repository is still in research/probe phase. There is no production injector and no existing game-mod repository is a dependency.
 
-The documentation has been reconciled to the current probe state: completed transport/D3D9Ex/dgVoodoo2/D3D10/XeSS/OpenXR-bootstrap work is no longer listed as merely planned. D3D9 now includes both a controlled native external-process interception boundary and a controlled dgVoodoo2 2.87.5 D3D12-addon presentation boundary. Real-game integration, D3D10 temporal-data integration, broader reconstruction-backend comparison, OpenXR presentation and headset validation remain explicit pending work.
+The audit on 2026-09-16 re-ran the main transport, D3D9Ex, dgVoodoo2, D3D10, OpenXR-bootstrap and XeSS paths without finding a current functional regression. The roadmap has been changed from horizontal probe expansion to one real D3D9Ex vertical slice. The largest remaining risk is no longer whether individual boundaries can work; it is whether one coherent real temporal frame can cross renderer observation, temporal semantics, transport and reconstruction without inheriting proof-only lifecycle/synchronization behavior.
+
+Windows CI now also compile-smokes the dependency-free optional Win32 probes (D3D9/D3D9Ex, external interceptor, D3D10 and the x86 bridge producer) plus the x64 bridge consumer. External-SDK probes remain conditional and are not silently vendored into CI.
 
 Current local evidence is concentrated in six implemented areas:
 
@@ -29,16 +31,20 @@ The separate OpenXR x64 bootstrap is **host-tested** for loader/instance/runtime
 - The current stereo transport loop is synthetic and does not establish concurrent full-resolution eye processing, OpenXR pacing or headset latency.
 - XeSS Native AA is the only real reconstruction backend executed locally so far; DLSS/DLAA, FidelityFX and XeSS SR comparison remains pending.
 - Motion-vector coverage for real skinned/cloth geometry, particles, transparency and first-person/VR objects remains unresolved.
+- The controlled D3D9 interceptor is evidence, not reusable runtime code as-is: it relies on simple/global hook state, cooperative loading and controlled lifecycle assumptions. A real adapter must own state per device/swapchain and fail open if the reconstruction path is unavailable.
+- D3D9/D3D10 event-query waits, CPU maps/readbacks and synchronous callback logging are validation mechanisms. Their presence in a probe does not justify them in the final per-frame hot path.
+- The x86/x64 bridge has substantially more synthetic validation than the current real-renderer path. Further transport optimization should be driven by a real integration measurement or newly observed hazard.
+- The project still lacks one shared vertical lifecycle/temporal contract exercised from a real legacy frame through reconstruction; this is the next architectural gate.
 
 ## Next concrete work
 
-1. Take both host-tested D3D9 boundaries to a real D3D9Ex title: native `EndScene` interception for original renderer state, and dgVoodoo's D3D12 addon for translated presentation resources. Record game-specific depth/transform/MV visibility before making an architecture decision.
-2. Investigate dgVoodoo's frontend D3D observer interfaces only as a focused experiment for pre-presentation resource/state provenance; do not infer those inputs from the successful D3D12 presentation callback.
-3. Extend the host-tested D3D10 relay into depth preservation and an SM4-compatible temporal-data provider, then place it behind a real interception boundary and repeat the capability probe on additional hardware/drivers.
-4. Continue backend comparison from the existing XeSS Native AA result: add DLSS/DLAA and FidelityFX mappings, then XeSS SR, while keeping backend-specific optional inputs explicit.
-5. When an HMD is visible to the OpenXR runtime, rerun `tools/run_openxr_runtime_probe.ps1` to collect stereo-view and D3D11/D3D12 adapter requirements before adding graphics session, swapchains and pacing.
-6. Extend renderer-transfer testing only where it answers a new uncertainty: real engine hazards/scaling, simultaneous attachments, concurrent full-resolution eyes, or a genuinely different device/host failure timing point.
-7. For real SR, validate renderer-resolution side effects such as post-processing, HUD/highlights, particles/billboards, mip bias and secondary-camera/pass assumptions.
+1. Extract only the internal frame/lifecycle semantics needed for a vertical experiment: frame/view identity, resource generation, reset/history validity and backend inputs. Keep it internal; do not freeze a public ABI.
+2. Take native observation into one real D3D9Ex title and identify the actual device/swapchain lifecycle, frame boundary, scene color, depth, matrices, draws/passes, HUD and resets. Replace probe-style global assumptions with per-device/per-swapchain state and fail-open behavior.
+3. Connect that real frame to the existing x86 -> x64 transport and XeSS Native AA 1:1 path. Keep CPU validation/readback and synchronous diagnostic logging out of the production-like frame path.
+4. Measure the real route before optimizing it: event-query stalls, GPU copies, buffering/backpressure, allocations, logging, frame pacing and latency. Change transport mechanics only when those measurements expose a material problem.
+5. Once the native vertical slice works, compare dgVoodoo2 on the exact same game. Investigate frontend observer interfaces only if needed to recover pre-presentation temporal provenance; the D3D12 presentation callback alone is insufficient evidence.
+6. Resume backend comparison after that gate: DLAA/DLSS-compatible mapping, FidelityFX and then SR. Treat renderer-resolution control, mip bias, HUD/post effects, particles and secondary cameras as separate SR integration work.
+7. Expand D3D10 and D3D8 after the vertical contract has proved reusable. Preserve per-eye identity/history throughout, but defer OpenXR graphics-session/submission work until the flat real slice is stable; rerun the bootstrap when an HMD is visible.
 
 ## Reference snapshots
 
@@ -50,4 +56,4 @@ The separate OpenXR x64 bootstrap is **host-tested** for loader/instance/runtime
 
 ## Working constraints
 
-Keep source-API adaptation, temporal-data production, transport and reconstruction backend separable until experiments justify coupling them. Preserve per-eye resource/history identity as an architectural requirement. Do not begin a production injector or freeze a universal public temporal ABI during the current research phase.
+Keep source-API adaptation, temporal-data production, transport and reconstruction backend separable until experiments justify coupling them. Preserve per-eye resource/history identity as an architectural requirement. Treat current probes as evidence generators rather than production modules. Do not begin a production injector or freeze a universal public temporal ABI during the current research phase.

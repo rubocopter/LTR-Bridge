@@ -67,25 +67,51 @@ Current foundation: the x64 D3D12 host launches the x86 D3D11 client with only g
 
 A renderer-transfer matrix now keeps the same RGBA8 cross-process contract while varying the x86-side source path. The original tiny `CopyResource` case remains host-tested. A high-resolution same-format copy covers `1920x1080 -> 3840x2160`; five repeated runs averaged `23.9184 us` at 1080p and `93.9013 us` at 4K. A 4x-MSAA `R8G8B8A8_UNORM` source resolves into the shared single-sample resource at `1920x1080 -> 2560x1440`; five runs averaged `15.0016 us` and `21.1627 us` for the resolve itself. A local `R10G10B10A2_UNORM` source is converted into shared `R8G8B8A8_UNORM` by a fullscreen D3D11 shader at the same two extents; five runs averaged `29.1685 us` and `46.3008 us`. Every repeated run completed 24 frames, one live generation replacement and zero mismatches. These are host-tested synthetic transfer intervals, not performance-validated engine costs.
 
-## Phase 3 — backend comparison
+## Phase 3 — real D3D9Ex vertical slice
 
-Status: **started: XeSS 3.0.2 Native AA on D3D12 x64 is implemented and host-tested at 1.0x with coherent harness jitter/MV semantics and a responsive-mask experiment; DLSS/DLAA, FidelityFX, XeSS SR, cross-backend contract comparison and real-content validation remain pending**.
+Status: **next validation gate; prerequisite synthetic pieces are host-tested, but no real game has yet carried one coherent temporal frame through observation, transport and reconstruction**.
 
-Run the controlled contract through at least DLAA/DLSS-compatible integration, FidelityFX temporal upscaling, and XeSS Native AA/SR where the available SDK/API path permits it. Document non-common inputs instead of hiding them.
+Use one real D3D9Ex title to establish the smallest complete path before expanding the matrix:
 
-For real SR, also validate insertion point and renderer-resolution side effects separately from backend correctness: post-processing resolution, screen-space particles/billboards, mip bias and any secondary-camera/pass assumptions must not silently inherit display-resolution semantics.
+- observe the actual device/swapchain lifecycle, present/frame boundary, scene color, depth, transforms, draws/passes, HUD composition and resets;
+- model ownership per device/swapchain and resource generation rather than inheriting the probe's global/static hook assumptions;
+- connect observed inputs to the same temporal semantics already exercised by the harness;
+- carry the frame through the existing x86 -> x64 GPU transport;
+- execute XeSS Native AA at 1:1 as the first real backend;
+- return or compose the reconstructed result without making reconstruction failure fatal to the renderer;
+- keep CPU readback, validation maps and synchronous diagnostic logging outside the production-like hot path.
 
-## Phase 4 — D3D10 probe
+Decision gate: do not add another source API or backend until one real frame can be traced end to end with correct reset/history/resource identity and useful timing data.
+
+Optimization work in this phase is measurement-driven. Record event-query stalls, GPU copies, ring/backpressure behavior, allocations, logging cost, frame pacing and latency in the real path; change the synthetic bridge only when the real renderer exposes a new hazard.
+
+## Phase 4 — same-game native vs dgVoodoo temporal provenance
+
+Status: **controlled comparison completed; real-game comparison pending**.
+
+After the native D3D9Ex path is understood, run the same title through dgVoodoo2. The official D3D12 addon boundary is already host-tested for translated presentation resources; determine whether frontend/observer routes retain useful original depth, transforms, pass identity or another basis for temporal data. Do not infer those inputs from presentation callbacks.
+
+Use the same game, scene and measurements so compatibility, temporal-data visibility, copies, scheduling, resets and frame-time effects are comparable.
+
+## Phase 5 — backend comparison and SR
+
+Status: **started: XeSS 3.0.2 Native AA on D3D12 x64 is implemented and host-tested at 1.0x; broader comparison is deliberately deferred until the real vertical slice works**.
+
+Once the vertical contract is exercised by a real renderer, map it to DLAA/DLSS-compatible integration, FidelityFX temporal upscaling and XeSS SR where the available SDK/API path permits it. Document backend-specific inputs instead of hiding them behind a premature lowest-common-denominator interface.
+
+For real SR, validate insertion point and renderer-resolution side effects separately from backend correctness: post-processing resolution, screen-space particles/billboards, mip bias and secondary-camera/pass assumptions must not silently inherit display-resolution semantics.
+
+## Phase 6 — D3D10 expansion
 
 Status: **legacy shared-resource relay, event-query synchronization and end-to-end x86 -> x64 transport implemented and host-tested on the current RTX 4070 Ti; keyed-mutex creation unavailable on this host; depth/MV/SM4 temporal-data and real-game integration pending**.
 
-Reproduce the useful architectural idea demonstrated by current DLSS5-Feeder: D3D10 game device -> legacy shared texture -> private D3D11 relay -> modern shared-resource path. Test whether this is robust beyond one implementation and one title.
+The transport route is already proved synthetically. Extend it only after the D3D9 vertical slice establishes the reusable temporal/lifecycle contract: preserve real depth, add an SM4-compatible temporal-data provider, place it behind a real interception boundary, and repeat capability testing on additional hardware/drivers.
 
 Also test Shader Model 4-compatible MV reconstruction paths and compare event-query synchronization with any keyed-mutex support actually observed on test hardware.
 
 Current-host result: a Win32 D3D10.1 device at feature level 10.0 renders deterministic R10 color, copies it into a `D3D10_RESOURCE_MISC_SHARED` R10 relay and waits for `D3D10_QUERY_EVENT`. A private same-adapter D3D11 device opens the relay and validates it across `640x360 -> 1280x720` recreation. Five standalone repetitions passed with zero mismatches. The same source route is integrated into the existing x86 -> x64 bridge through the D3D11 R10-to-RGBA8 fullscreen conversion; five 24-frame repetitions passed with one generation transition and zero mismatches. Across those bridge runs, the D3D10 copy+event CPU-wall mean averaged about `0.1866 ms` between run means and the D3D11 conversion about `5.0531 us`. These are short synthetic single-host measurements, not performance validation. A keyed-mutex capability probe returns `E_INVALIDARG` (`0x80070057`) during D3D10 resource creation on this host, so that path is recorded as unavailable rather than generalized as unsupported.
 
-## Phase 5 — D3D9 architecture comparison
+## Completed research block — D3D9 controlled architecture comparison
 
 Status: **controlled-target comparison host-tested on the current machine: native D3D9Ex interception/relay works, classic D3D9 shared creation remains a negative boundary, dgVoodoo2 2.87.5 rejects the native D3D9 shared-relay design as-is, and the official dgVoodoo D3D12 addon API exposes a working translated presentation boundary**.
 
@@ -106,19 +132,13 @@ Start with a minimal API-interop probe before attempting reconstruction:
 
 Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares the documented R10/RGBA16F relay formats; documented RGBA8 fails here and BGRA8 remains a driver-specific control. The simpler relay path is stable through 1440p and `ResetEx`. The controlled-scene probe renders overlapping red/green geometry through an engine-owned vertex buffer into an engine-owned R10 target with D24S8 depth and explicit fixed-function world/view/projection state. Five standalone `640x360 -> 1280x720` runs pass with zero mismatches, and the same scene reaches the x86 -> x64 bridge in five 24-frame zero-mismatch runs. A separate target/interceptor pair validates the external native boundary: the target owns the scene and renderer loop, while an external DLL hooks API/COM entry points, observes the still-bound color/depth/world state after `EndScene`, copies to its own shared R10 relay, validates through private D3D11, and survives one intercepted `ResetEx`. Five repeated runs pass with zero mismatches and state preservation; `StretchRect + event` run means are about `0.1903–0.2041 ms` (about `0.1990 ms` average). Under dgVoodoo2 2.87.5, the same R10 target fails at D3D9 target creation and the BGRA8 profile reaches rendering but fails when the interceptor asks dgVoodoo for the shared D3D9Ex relay, so that native relay design is not reusable through the wrapper as-is. With `OutputAPI=d3d12_fl11_0`, the official addon API instead exposes a working modern presentation boundary: five runs report API version `0x287`, a non-null D3D12 device, two swapchain generations, 12 matched present begin/end callbacks and non-null source/destination resources on every frame. The callback source is `DXGI_FORMAT_R8G8B8A8_TYPELESS` and the drawing target is `DXGI_FORMAT_R8G8B8A8_UNORM` in this profile. These are controlled single-host results, not performance validation or real-game evidence.
 
-Then compare three routes on the same controlled target:
+The controlled target has now compared the relevant route boundaries:
 
 1. native D3D9 interception plus a dedicated transport;
 2. native D3D9/D3D9Ex interception -> constrained shared-texture D3D11 relay -> modern path, when supported;
 3. dgVoodoo2 translation -> modern backend observation; the D3D12 addon presentation boundary is host-tested while downstream D3D11-style integration remains a separate experiment.
 
-Collect compatibility, depth access, transform/MV visibility, proxy coexistence, GPU copies, latency, frame pacing, device reset behavior, and mod/VR integration impact.
-
-## Phase 6 — first real legacy game
-
-Status: **planned**.
-
-Choose a title only after Phases 1–5 establish which architecture is justified. A game is a validation target, not the place to invent the basic transport contract.
+The unresolved comparison has moved to Phase 4 because real-game temporal provenance, not another controlled presentation test, is now the deciding evidence.
 
 ## D3D8 comparison — after the D3D9 boundary is understood
 
