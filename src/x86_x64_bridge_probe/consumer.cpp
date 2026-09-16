@@ -108,11 +108,14 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr
         << "usage: consumer --producer <x86-producer> [--negative "
            "protocol|adapter|resource-contract|host-stall|dynamic-control|"
-           "client-termination|device-removal|host-termination]"
+            "client-termination|device-removal|host-termination|"
+            "backpressure-host-termination]"
            " [--backpressure-depth 1|2] [--stereo|--stereo-contamination|"
            "--stereo-history|--stereo-history-swap]\n";
     return 2;
   }
+  if (o.negative == L"backpressure-host-termination")
+    o.backpressure_depth = 1U;
   ComPtr<ID3D12Device> dev;
   if (!check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
                                IID_PPV_ARGS(&dev)),
@@ -201,6 +204,7 @@ int wmain(int argc, wchar_t **argv) {
   bool deferred_negative = false;
   std::uint32_t expect_host_stall = 0;
   std::uint32_t expect_host_termination = 0;
+  std::uint32_t expect_backpressure_host_termination = 0;
   if (o.negative == L"protocol") {
     ++protocol;
     expected = 3;
@@ -224,6 +228,8 @@ int wmain(int argc, wchar_t **argv) {
     deferred_negative = true;
   } else if (o.negative == L"host-termination") {
     expect_host_termination = 1;
+  } else if (o.negative == L"backpressure-host-termination") {
+    expect_backpressure_host_termination = 1;
   } else if (!o.negative.empty()) {
     std::cerr << "unknown negative mode\n";
     return 7;
@@ -258,7 +264,8 @@ int wmain(int argc, wchar_t **argv) {
       << L" --protocol-version " << protocol << L" --frames-per-generation "
       << ltr::bridge_probe::kFramesPerGeneration << L" --expect-host-stall "
       << expect_host_stall << L" --expect-host-termination "
-      << expect_host_termination << L" --backpressure-depth "
+      << expect_host_termination << L" --expect-backpressure-host-termination "
+      << expect_backpressure_host_termination << L" --backpressure-depth "
       << o.backpressure_depth << L" --stereo-mode " << (o.stereo ? 1U : 0U)
       << L" --stereo-history-mode " << (o.stereo_history ? 1U : 0U);
   std::wstring line = cmd.str();
@@ -363,6 +370,28 @@ int wmain(int argc, wchar_t **argv) {
               << std::flush;
     TerminateProcess(GetCurrentProcess(), 24);
     return 24;
+  }
+  if (o.negative == L"backpressure-host-termination") {
+    HANDLE ready_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!ready_event)
+      return 11;
+    if (!check(ready_fence->SetEventOnCompletion(1, ready_event),
+               "SetEventOnCompletion(backpressure-host-termination-ready)")) {
+      CloseHandle(ready_event);
+      return 11;
+    }
+    const DWORD ready_wait = WaitForSingleObject(ready_event, 10000);
+    CloseHandle(ready_event);
+    if (ready_wait != WAIT_OBJECT_0) {
+      std::cerr << "backpressure-host-termination producer-ready wait failed\n";
+      return 11;
+    }
+    std::cout << "negative_mode=backpressure-host-termination producer_pid="
+              << pi.dwProcessId
+              << " ring_depth=1 after_ready_value=1 host_exit=26\n"
+              << std::flush;
+    TerminateProcess(GetCurrentProcess(), 26);
+    return 26;
   }
   if (o.backpressure_depth || o.stereo) {
     CloseHandle(control_write);

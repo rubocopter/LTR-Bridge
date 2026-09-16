@@ -78,6 +78,19 @@ if ($hostTerminationText -notmatch "reject=host_terminated detected_by=process_h
     throw "host-termination producer did not report clean host-loss detection"
 }
 
+Write-Host "=== negative probe: backpressure host termination during slot reuse ==="
+$backpressureHostTerminationOutput = & $consumer --producer $producer --negative backpressure-host-termination 2>&1
+$backpressureHostTerminationExit = $LASTEXITCODE
+$backpressureHostTerminationOutput | ForEach-Object { Write-Host $_ }
+$backpressureHostTerminationText = $backpressureHostTerminationOutput -join "`n"
+if ($backpressureHostTerminationExit -ne 26) {
+    throw "backpressure-host-termination host exit was $backpressureHostTerminationExit instead of 26"
+}
+if ($backpressureHostTerminationText -notmatch "reject=backpressure_host_terminated detected_by=process_handle" -or
+    $backpressureHostTerminationText -notmatch "RESULT PASS") {
+    throw "backpressure-host-termination producer did not report clean in-flight host-loss detection"
+}
+
 foreach ($depth in @(1, 2)) {
     Write-Host "=== backpressure probe: ring depth $depth ==="
     Invoke-Checked $consumer @(

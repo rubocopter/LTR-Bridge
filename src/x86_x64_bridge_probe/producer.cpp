@@ -36,6 +36,7 @@ struct Arguments {
   std::uint32_t frames = 0;
   std::uint32_t expect_host_stall = 0;
   std::uint32_t expect_host_termination = 0;
+  std::uint32_t expect_backpressure_host_termination = 0;
   std::uint32_t backpressure_depth = 0;
   std::uint32_t stereo_mode = 0;
   std::uint32_t stereo_history_mode = 0;
@@ -101,6 +102,10 @@ struct Arguments {
         return false;
     } else if (k == L"--expect-host-termination") {
       if (!u32(v, a.expect_host_termination) || a.expect_host_termination > 1U)
+        return false;
+    } else if (k == L"--expect-backpressure-host-termination") {
+      if (!u32(v, a.expect_backpressure_host_termination) ||
+          a.expect_backpressure_host_termination > 1U)
         return false;
     } else if (k == L"--backpressure-depth") {
       if (!u32(v, a.backpressure_depth) || a.backpressure_depth > 2U)
@@ -303,8 +308,10 @@ int wmain(int argc, wchar_t **argv) {
     std::cerr << "host-termination probe failed wait=" << wait << "\n";
     return 23;
   }
-  CloseHandle(a.host_process_handle);
-  a.host_process_handle = nullptr;
+  if (!a.expect_backpressure_host_termination) {
+    CloseHandle(a.host_process_handle);
+    a.host_process_handle = nullptr;
+  }
   if (a.expect_host_stall) {
     if (!check(ctx4->Signal(ready_fence.Get(), 1),
                "Signal(host-stall-ready)")) {
@@ -444,6 +451,7 @@ int wmain(int argc, wchar_t **argv) {
     std::uint64_t mismatches = 0;
     std::uint32_t submitted = 0, completed = 0, max_in_flight = 0;
     std::uint32_t pending_reuse_waits = 0;
+    bool backpressure_host_terminated = false;
     double wait_sum_ms = 0.0;
 
     const auto validate = [&](std::uint32_t frame_to_validate,
@@ -453,6 +461,33 @@ int wmain(int argc, wchar_t **argv) {
       if (reuse && done_fence->GetCompletedValue() < target)
         ++pending_reuse_waits;
       const auto wait_start = std::chrono::steady_clock::now();
+      if (reuse && a.expect_backpressure_host_termination) {
+        HANDLE done_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!done_event)
+          return false;
+        if (!check(done_fence->SetEventOnCompletion(target, done_event),
+                   "SetEventOnCompletion(backpressure-host-termination)")) {
+          CloseHandle(done_event);
+          return false;
+        }
+        HANDLE waits[] = {done_event, a.host_process_handle};
+        const DWORD wait = WaitForMultipleObjects(2, waits, FALSE, 10000);
+        const DWORD host_state = WaitForSingleObject(
+            a.host_process_handle, wait == WAIT_OBJECT_0 ? 250 : 0);
+        CloseHandle(done_event);
+        if (host_state == WAIT_OBJECT_0) {
+          backpressure_host_terminated = true;
+          std::cout << "reject=backpressure_host_terminated "
+                       "detected_by=process_handle frame="
+                    << frame_to_validate << " slot=" << slot
+                    << " target=" << target << " fence_wait_result=" << wait
+                    << "\nRESULT PASS\n";
+          return false;
+        }
+        std::cerr << "backpressure-host-termination probe failed wait=" << wait
+                  << " host_state=" << host_state << "\n";
+        return false;
+      }
       if (!check(ctx4->Wait(done_fence.Get(), target),
                  "Wait(backpressure-done)"))
         return false;
@@ -490,8 +525,12 @@ int wmain(int argc, wchar_t **argv) {
     for (std::uint32_t frame = 0; frame < total; ++frame) {
       const std::uint32_t slot = frame % depth;
       if (frame >= depth && !validate(frame - depth, slot, true)) {
+        if (a.host_process_handle) {
+          CloseHandle(a.host_process_handle);
+          a.host_process_handle = nullptr;
+        }
         CloseHandle(fh);
-        return 20;
+        return backpressure_host_terminated ? 26 : 20;
       }
       for (std::uint32_t y = 0; y < spec.height; ++y)
         for (std::uint32_t x = 0; x < spec.width; ++x) {
@@ -516,9 +555,17 @@ int wmain(int argc, wchar_t **argv) {
     }
     for (std::uint32_t frame = total - depth; frame < total; ++frame) {
       if (!validate(frame, frame % depth, false)) {
+        if (a.host_process_handle) {
+          CloseHandle(a.host_process_handle);
+          a.host_process_handle = nullptr;
+        }
         CloseHandle(fh);
         return 20;
       }
+    }
+    if (a.host_process_handle) {
+      CloseHandle(a.host_process_handle);
+      a.host_process_handle = nullptr;
     }
     CloseHandle(fh);
     const bool passed = mismatches == 0 && max_in_flight == depth &&
