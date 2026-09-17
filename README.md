@@ -43,8 +43,6 @@ See [AGENTS.md](AGENTS.md) for the working rules and [docs/internal/CODEX_HANDOF
 
 </details>
 
-## License and support
+## License
 
 Original code and documentation are released under the [MIT License](LICENSE). Third-party components retain their own terms; see [docs/REFERENCES.md](docs/REFERENCES.md).
-
-If you want to support continued research, see [Ko-fi](https://ko-fi.com/onitaku).
