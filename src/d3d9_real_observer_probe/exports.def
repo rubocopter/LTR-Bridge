@@ -1,0 +1,3 @@
+LIBRARY ltr_d3d9_real_observer_bootstrap
+EXPORTS
+    D3DXGetShaderVersion=_D3DXGetShaderVersion@4

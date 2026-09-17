@@ -2,12 +2,26 @@
 
 #include <cstdint>
 
-namespace ltr::harness {
+namespace ltr::temporal {
 
-enum class HistoryResetReason : std::uint32_t { none = 0, startup, resize, scenario_change, manual };
+enum class HistoryResetReason : std::uint32_t {
+    none = 0,
+    startup,
+    resize,
+    resource_recreate,
+    device_reset,
+    sequence_discontinuity,
+    scenario_change,
+    manual,
+};
+
 enum class MotionDirection : std::uint32_t { current_to_previous };
 enum class MotionUnits : std::uint32_t { render_pixels };
-enum class MotionProvenance : std::uint32_t { renderer_ground_truth, camera_depth_reconstruction, optical_flow };
+enum class MotionProvenance : std::uint32_t {
+    renderer_ground_truth,
+    camera_depth_reconstruction,
+    optical_flow,
+};
 
 enum MotionCoverage : std::uint32_t {
     coverage_none = 0,
@@ -22,6 +36,7 @@ enum MotionCoverage : std::uint32_t {
 struct FrameIdentity {
     std::uint64_t frame_index = 0;
     std::uint32_t view_index = 0;
+    std::uint32_t resource_generation = 0;
     std::uint32_t history_generation = 0;
     HistoryResetReason reset_reason = HistoryResetReason::none;
 };
@@ -48,4 +63,22 @@ struct TemporalFrameDescription {
     MotionMetadata motion{};
 };
 
-} // namespace ltr::harness
+[[nodiscard]] constexpr bool HasValidDimensions(
+    const TemporalFrameDescription& frame) noexcept
+{
+    return frame.render_width != 0 && frame.render_height != 0 &&
+           frame.output_width != 0 && frame.output_height != 0;
+}
+
+[[nodiscard]] constexpr bool CanReuseHistory(
+    const TemporalFrameDescription& previous,
+    const TemporalFrameDescription& current) noexcept
+{
+    return current.identity.reset_reason == HistoryResetReason::none &&
+           current.identity.view_index == previous.identity.view_index &&
+           current.identity.resource_generation == previous.identity.resource_generation &&
+           current.identity.history_generation == previous.identity.history_generation &&
+           current.identity.frame_index == previous.identity.frame_index + 1u;
+}
+
+} // namespace ltr::temporal

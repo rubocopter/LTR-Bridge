@@ -97,7 +97,7 @@ The following decisions remain deliberately open:
 | Decision | Evidence required before committing |
 | --- | --- |
 | ReShade as a required layer | At least two source APIs and one non-ReShade path compared for access, coexistence, and latency. |
-| dgVoodoo2 as default legacy route | The controlled comparison is complete. Compare native D3D9Ex observation and dgVoodoo2 on the same real game for original depth/transform/MV provenance, compatibility, scheduling and frame-time behavior; the proven D3D12 addon presentation callback alone is not temporal-input evidence. |
+| dgVoodoo2 as default legacy route | The controlled comparison is complete, while Call of Juarez now has a host-tested native compatibility route: intercept `Direct3DCreate9`, back it with D3D9Ex, retain the base D3D9 interface, and relay the real frame into D3D11. Compare dgVoodoo2 on the same game only after lifecycle/compatibility and temporal provenance of this lighter route are measured; the proven D3D12 addon presentation callback alone is not temporal-input evidence. |
 | D3D12 as universal host | Backend/API matrix showing another host cannot provide equivalent capability or materially lowers portability. |
 | Single universal backend interface | DLSS, FSR, and XeSS contract comparison with optional features represented without semantic loss. |
 | Optical flow as general MV fallback | Visual and temporal validation including animated geometry, particles, disocclusion, and VR head motion. |
@@ -105,19 +105,25 @@ The following decisions remain deliberately open:
 
 ## Next validation gate: one real vertical slice
 
-The next experiment should connect the already-proven pieces through one real D3D9Ex title before adding another source API or reconstruction backend:
+Call of Juarez has now supplied the real renderer boundary and a complete one-shot cross-bitness color path. The game still calls the legacy D3D9 API, but an experimental `Direct3DCreate9 -> Direct3DCreate9Ex` substitution returns the Ex object through its base `IDirect3D9` interface. The game then creates an Ex-capable device through the ordinary `CreateDevice` call. At the real `Present` boundary, a same-format shared relay accepts the `2560x1440` frame with `StretchRect`, completes through a D3D9 event query and opens in private x86 D3D11. A game-free probe validates the persistent process/fence topology: x64 D3D12 owns two shared BGRA8 slots and `done`, x86 D3D11 opens those slots and owns `ready`, and a compact bootstrap duplicates the resource/fence handles into x86. The client code from that probe is now connected to the observer with backpressure-aware capture and reset teardown. The join is implemented and compile-tested; the next experiment is to prove it and its resource generations in the game:
 
 ```text
-real D3D9Ex renderer
+real Call of Juarez D3D9 API
         |
         v
-per-device / per-swapchain observation
+Direct3DCreate9 -> D3D9Ex compatibility substitution (host-tested)
+        |
+        v
+Present color -> shared D3D9Ex relay -> D3D11 x86 (host-tested)
+        |
+        v
+shared D3D11 transport client -> D3D12 x64 (offline host-tested)
+        |
+        v
+x64-owned shared slots + ready/done ring (observer join compile-tested; live test pending)
         |
         v
 TemporalFrame semantics
-        |
-        v
-x86 -> x64 GPU transport
         |
         v
 XeSS Native AA 1:1
@@ -126,7 +132,7 @@ XeSS Native AA 1:1
 game output
 ```
 
-Success means the same frame identity, resource generation, reset state, color/depth/MV semantics and history validity can be followed through the complete route. The real adapter must fail open: loss or rejection of reconstruction may disable the experiment, but it must not deliberately fail the game's renderer.
+The direct shared-resource shortcut is not available to a true classic-D3D9 device on the current host: classic D3D9 cannot create the tested shared textures, and a classic device also cannot open the tested handles created by another D3D9Ex device. The compatibility substitution avoids that boundary by making the game's own device Ex-capable while preserving the D3D9 interface it consumes. The one-shot x86/x64 result removes format/bitness interoperability as a blocker, while the offline two-slot probe removes the basic ready/done/backpressure mechanics as the current blocker. The first D3D11-owned persistent-slot experiment is deliberately not part of the architecture: its fences advanced while D3D12 content validation remained zero on this host. The current success gate is sustaining the implemented join across real frames and resource generations, then following frame identity, reset state, color/depth/MV semantics and history validity through reconstruction. The adapter fails open: transport loss disables the experiment while the original renderer path continues.
 
 Keep validation and runtime responsibilities separate. CPU readback, pixel-by-pixel verification and synchronous callback logging remain diagnostic tools. Any synchronization retained in the frame path must be justified by measurements from the real integration rather than inherited from a probe.
 
@@ -136,7 +142,7 @@ Use XeSS Native AA first because its backend contract already executes locally a
 
 1. **Temporal semantics dominate transport.** A technically perfect x86/x64 bridge is not useful if legacy inputs are wrong.
 2. **Motion vectors may require engine-specific knowledge.** Camera-only reconstruction cannot describe skinned meshes, particles, independent weapons, or animation.
-3. **D3D9 sharing has a narrow documented interop path.** On the current host, classic D3D9 shared-texture creation fails for every tested case while D3D9Ex successfully reaches D3D11 and the existing x86/x64 bridge through a constrained relay. This remains host/driver-scoped evidence, so other systems still require capability detection rather than assuming the same boundary.
+3. **D3D9 sharing has a narrow documented interop path.** On the current host, classic D3D9 shared-texture creation fails for every tested case while D3D9Ex successfully reaches D3D11 and the existing x86/x64 bridge through a constrained relay. The inverse shortcut also fails here: classic D3D9 cannot open the tested shared handles created by D3D9Ex. This remains host/driver-scoped evidence, so other systems still require capability detection rather than assuming the same boundary.
 4. **D3D10 sits between generations.** It can share legacy DXGI resources but lacks D3D11.1 NT handles, D3D11-style fences, and UAV capability needed by modern output paths.
 5. **Super Resolution changes the renderer.** Real SR requires control over internal render resolution, projection jitter, resource extents, post-processing, and UI composition; post-process downscale/re-upscale is not equivalent.
 6. **VR amplifies latency and temporal mistakes.** Per-eye divergence and head-motion errors can be uncomfortable even if screenshots look sharp.

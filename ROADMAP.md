@@ -67,29 +67,41 @@ Current foundation: the x64 D3D12 host launches the x86 D3D11 client with only g
 
 A renderer-transfer matrix now keeps the same RGBA8 cross-process contract while varying the x86-side source path. The original tiny `CopyResource` case remains host-tested. A high-resolution same-format copy covers `1920x1080 -> 3840x2160`; five repeated runs averaged `23.9184 us` at 1080p and `93.9013 us` at 4K. A 4x-MSAA `R8G8B8A8_UNORM` source resolves into the shared single-sample resource at `1920x1080 -> 2560x1440`; five runs averaged `15.0016 us` and `21.1627 us` for the resolve itself. A local `R10G10B10A2_UNORM` source is converted into shared `R8G8B8A8_UNORM` by a fullscreen D3D11 shader at the same two extents; five runs averaged `29.1685 us` and `46.3008 us`. Every repeated run completed 24 frames, one live generation replacement and zero mismatches. These are host-tested synthetic transfer intervals, not performance-validated engine costs.
 
-## Phase 3 — real D3D9Ex vertical slice
+## Phase 3 — real Call of Juarez / classic-D3D9 vertical slice
 
-Status: **next validation gate; prerequisite synthetic pieces are host-tested, but no real game has yet carried one coherent temporal frame through observation, transport and reconstruction**.
+Status: **real-game observation plus a one-shot D3D9-facing -> D3D9Ex -> D3D11 x86 -> D3D12 x64 color path are host-tested; the exact two-slot transport is host-tested offline and its shared client is connected to the observer behind an opt-in, compile-tested switch; live multiframe and reset/resource-generation validation remain pending**.
 
-Use one real D3D9Ex title to establish the smallest complete path before expanding the matrix:
+Use the clean Steam Call of Juarez renderer to establish the smallest complete path before expanding the matrix:
 
-- observe the actual device/swapchain lifecycle, present/frame boundary, scene color, depth, transforms, draws/passes, HUD composition and resets;
-- model ownership per device/swapchain and resource generation rather than inheriting the probe's global/static hook assumptions;
-- connect observed inputs to the same temporal semantics already exercised by the harness;
-- carry the frame through the existing x86 -> x64 GPU transport;
-- execute XeSS Native AA at 1:1 as the first real backend;
-- return or compose the reconstructed result without making reconstruction failure fatal to the renderer;
-- keep CPU readback, validation maps and synchronous diagnostic logging outside the production-like hot path.
+- [x] establish that the game uses classic `IDirect3D9`, not D3D9Ex, and reaches the real renderer through `Direct3DCreate9`;
+- [x] observe the real `Present` boundary with a `2560x1440` `D3DFMT_A8R8G8B8` render target, `D3DFMT_D24X8` depth, transforms and one swapchain visible;
+- [x] prove that the simple shared-resource relay is unavailable on this host both for classic-D3D9 shared creation and for opening D3D9Ex-created shared handles from a classic device;
+- [x] prove synthetically that an `IDirect3D9Ex` root exposed through `IDirect3D9::CreateDevice` yields an Ex-capable device with the same R10/RGBA16F/BGRA8 sharing behavior;
+- [x] promote Call of Juarez's intercepted `Direct3DCreate9` to `Direct3DCreate9Ex` while preserving the base interface and verify that the real game still reaches `Present` with an Ex-capable device;
+- [x] copy the real `2560x1440` A8R8G8B8 frame into a shared same-format relay, complete with a D3D9 event query, open it in D3D11, and compare five source/consumer samples with zero mismatches;
+- [x] copy that real D3D11 frame into an NT-shared BGRA8 texture and open/validate it from a separate x64 D3D12 process; five samples match with zero mismatches;
+- [x] isolate the failed persistent handoff from the game and host-test the replacement ownership contract offline: x64 D3D12 owns two shared BGRA8 slots plus the `done` fence, duplicates their handles into x86, x86 D3D11 opens the slots and owns the named `ready` fence; 5 x 12-frame `64x64` runs and 3 x 12-frame `2560x1440` runs complete with zero content mismatches under forced two-slot backpressure;
+- [x] implement the opt-in replacement for the one-shot handoff using the same host-tested bounded ready/done client, without validation readback in the game-side frame path; the observer join is compile-tested and still requires live validation;
+- [ ] live-test 12 real submissions/completions and then a reset-triggered generation replacement with clean fail-open teardown. The prepared runner now makes the x64 sink execute a real D3D12 consumer copy before every `done`, verifies color/depth/transforms at the real `Present` boundary, and can use `-RequireResetGeneration` to stall generation 1 deliberately so a user-triggered game `Reset` exercises active-child teardown before requiring a fully completed post-reset generation;
+- [ ] extend observation only where required to identify scene color/depth, transforms, draws/passes, HUD composition and reset lifecycle for temporal semantics;
+- [ ] replace probe-style global/static hook ownership with per-device/per-swapchain state and explicit resource generations where the live lifecycle test shows it is required;
+- [ ] emit the real renderer inputs through the internal `TemporalFrame` semantics already exercised by the harness, including frame/view identity, history validity and reset reason;
+- [x] connect the real observer to the existing x86 -> x64 GPU transport in source using the shared two-slot client; the exact contract is host-tested offline and the observer integration is compile-tested;
+- [ ] execute XeSS Native AA at 1:1 as the first real reconstruction backend;
+- [ ] return or compose the reconstructed result without making reconstruction failure fatal to the renderer;
+- [x] keep validation readback out of the multiframe game-side hot path; CPU maps/readbacks remain confined to probes and consumer-side validation.
 
 Decision gate: do not add another source API or backend until one real frame can be traced end to end with correct reset/history/resource identity and useful timing data.
 
 Optimization work in this phase is measurement-driven. Record event-query stalls, GPU copies, ring/backpressure behavior, allocations, logging cost, frame pacing and latency in the real path; change the synthetic bridge only when the real renderer exposes a new hazard.
 
+**Observed failed real-game multiframe attempt, offline resolution and new integration (2026-09-17):** the initial two-slot/12-frame game experiment created D3D11-owned `SHARED_NTHANDLE | SHARED_KEYEDMUTEX` transport textures and launched a persistent x64 sink, but ended at `stage=completion RESULT FAIL`. A game-free probe reproduced the failure: fences reached 12 while D3D12 content validation read zero. The replacement direction makes x64 D3D12 own the slots and `done`, while x86 D3D11 opens them and owns `ready`. Its client is now shared between the synthetic producer and observer. After extraction, five `64x64` and three `2560x1440` 12-frame runs completed with zero mismatches and forced backpressure. The observer integration now keeps one D3D9/D3D11 source relay per transport slot. Since slot reuse is admitted only after that slot's prior `done` value, and `done` is downstream of the matching `ready` signal and D3D11 copy, the redundant per-frame D3D11 event-query wait has been removed while the D3D9 event query remains the producer-to-D3D11 handoff. The synthetic producer now also waits for slot admission before rewriting its matching source; 3/3 `64x64` and 2/2 `2560x1440` forced-backpressure runs passed 12/12 with zero mismatches after this refinement. The observer compiles, skips work under slot pressure, recreates state lazily after reset and fails open. This is **implemented and compile-tested**, while real-game multiframe and reset-generation behavior remain **experiment-pending**.
+
 ## Phase 4 — same-game native vs dgVoodoo temporal provenance
 
 Status: **controlled comparison completed; real-game comparison pending**.
 
-After the native D3D9Ex path is understood, run the same title through dgVoodoo2. The official D3D12 addon boundary is already host-tested for translated presentation resources; determine whether frontend/observer routes retain useful original depth, transforms, pass identity or another basis for temporal data. Do not infer those inputs from presentation callbacks.
+Run the same Call of Juarez build through dgVoodoo2 after the lighter D3D9Ex compatibility route has been measured for lifecycle, compatibility and temporal provenance, or earlier if a real game state exposes a blocker. The official D3D12 addon boundary is already host-tested for translated presentation resources; determine whether frontend/observer routes retain useful original depth, transforms, pass identity or another basis for temporal data. Do not infer those inputs from presentation callbacks.
 
 Use the same game, scene and measurements so compatibility, temporal-data visibility, copies, scheduling, resets and frame-time effects are comparable.
 
@@ -113,12 +125,13 @@ Current-host result: a Win32 D3D10.1 device at feature level 10.0 renders determ
 
 ## Completed research block — D3D9 controlled architecture comparison
 
-Status: **controlled-target comparison host-tested on the current machine: native D3D9Ex interception/relay works, classic D3D9 shared creation remains a negative boundary, dgVoodoo2 2.87.5 rejects the native D3D9 shared-relay design as-is, and the official dgVoodoo D3D12 addon API exposes a working translated presentation boundary**.
+Status: **controlled-target comparison host-tested on the current machine: native D3D9Ex interception/relay works, classic D3D9 shared creation and D3D9Ex-handle opening from classic D3D9 are negative boundaries, dgVoodoo2 2.87.5 rejects the native D3D9 shared-relay design as-is, and the official dgVoodoo D3D12 addon API exposes a working translated presentation boundary**.
 
 Start with a minimal API-interop probe before attempting reconstruction:
 
 - [x] classic D3D9 producer -> shared-texture creation attempt -> D3D11 consumer boundary;
 - [x] D3D9Ex producer -> shared texture -> D3D11 consumer;
+- [x] D3D9Ex producer -> shared handle -> classic D3D9 open attempt for R10, RGBA16F and BGRA8-control resources;
 - [x] verify first-host format behavior, pixel contents, explicit event-query synchronization and resource recreation;
 - [x] copy from a local D3D9Ex render target into the relay texture with `StretchRect` and account for completion cost;
 - [x] exercise D3D9Ex `ResetEx` and relay-resource recreation;
@@ -130,7 +143,7 @@ Start with a minimal API-interop probe before attempting reconstruction:
 - [x] build a minimal addon against the external dgVoodoo API 2.87.5 package and observe the D3D12 root, adapter/device, swapchain and presentation lifecycle without modifying resources.
 - [x] repeat the dgVoodoo D3D12-addon path five times across `640x360 -> 1280x720` reset/recreation and require 12/12 non-null source/destination presentation resources.
 
-Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares the documented R10/RGBA16F relay formats; documented RGBA8 fails here and BGRA8 remains a driver-specific control. The simpler relay path is stable through 1440p and `ResetEx`. The controlled-scene probe renders overlapping red/green geometry through an engine-owned vertex buffer into an engine-owned R10 target with D24S8 depth and explicit fixed-function world/view/projection state. Five standalone `640x360 -> 1280x720` runs pass with zero mismatches, and the same scene reaches the x86 -> x64 bridge in five 24-frame zero-mismatch runs. A separate target/interceptor pair validates the external native boundary: the target owns the scene and renderer loop, while an external DLL hooks API/COM entry points, observes the still-bound color/depth/world state after `EndScene`, copies to its own shared R10 relay, validates through private D3D11, and survives one intercepted `ResetEx`. Five repeated runs pass with zero mismatches and state preservation; `StretchRect + event` run means are about `0.1903–0.2041 ms` (about `0.1990 ms` average). Under dgVoodoo2 2.87.5, the same R10 target fails at D3D9 target creation and the BGRA8 profile reaches rendering but fails when the interceptor asks dgVoodoo for the shared D3D9Ex relay, so that native relay design is not reusable through the wrapper as-is. With `OutputAPI=d3d12_fl11_0`, the official addon API instead exposes a working modern presentation boundary: five runs report API version `0x287`, a non-null D3D12 device, two swapchain generations, 12 matched present begin/end callbacks and non-null source/destination resources on every frame. The callback source is `DXGI_FORMAT_R8G8B8A8_TYPELESS` and the drawing target is `DXGI_FORMAT_R8G8B8A8_UNORM` in this profile. These are controlled single-host results, not performance validation or real-game evidence.
+Current-host result: classic D3D9 returns `D3DERR_INVALIDCALL` for every tested `CreateTexture(..., pSharedHandle)` case. D3D9Ex successfully shares the documented R10/RGBA16F relay formats; documented RGBA8 fails here and BGRA8 remains a driver-specific control. A cross-runtime matrix then creates R10, RGBA16F and BGRA8-control shared resources in D3D9Ex and asks a classic D3D9 device to open the same handles; all three opens also return `D3DERR_INVALIDCALL`. The simpler D3D9Ex relay path remains stable through 1440p and `ResetEx`. The controlled-scene probe renders overlapping red/green geometry through an engine-owned vertex buffer into an engine-owned R10 target with D24S8 depth and explicit fixed-function world/view/projection state. Five standalone `640x360 -> 1280x720` runs pass with zero mismatches, and the same scene reaches the x86 -> x64 bridge in five 24-frame zero-mismatch runs. A separate target/interceptor pair validates the external native boundary: the target owns the scene and renderer loop, while an external DLL hooks API/COM entry points, observes the still-bound color/depth/world state after `EndScene`, copies to its own shared R10 relay, validates through private D3D11, and survives one intercepted `ResetEx`. Five repeated runs pass with zero mismatches and state preservation; `StretchRect + event` run means are about `0.1903–0.2041 ms` (about `0.1990 ms` average). Under dgVoodoo2 2.87.5, the same R10 target fails at D3D9 target creation and the BGRA8 profile reaches rendering but fails when the interceptor asks dgVoodoo for the shared D3D9Ex relay, so that native relay design is not reusable through the wrapper as-is. With `OutputAPI=d3d12_fl11_0`, the official addon API instead exposes a working modern presentation boundary: five runs report API version `0x287`, a non-null D3D12 device, two swapchain generations, 12 matched present begin/end callbacks and non-null source/destination resources on every frame. The callback source is `DXGI_FORMAT_R8G8B8A8_TYPELESS` and the drawing target is `DXGI_FORMAT_R8G8B8A8_UNORM` in this profile. These are controlled single-host results; the Call of Juarez observation in Phase 3 is the separate real-game evidence.
 
 The controlled target has now compared the relevant route boundaries:
 

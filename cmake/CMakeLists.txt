@@ -1,6 +1,7 @@
 add_executable(ltr_temporal_harness WIN32
     ../src/harness/main.cpp
-    ../src/harness/temporal_frame.h
+    ../src/temporal/temporal_frame.h
+    ../src/temporal/temporal_sequence.h
 )
 target_compile_features(ltr_temporal_harness PRIVATE cxx_std_20)
 target_compile_definitions(ltr_temporal_harness PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)

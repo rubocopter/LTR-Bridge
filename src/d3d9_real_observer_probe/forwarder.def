@@ -1,0 +1,19 @@
+LIBRARY d3dx9_29
+EXPORTS
+    D3DXAssembleShader=ltr_d3dx9_29_real.D3DXAssembleShader
+    D3DXCompileShader=ltr_d3dx9_29_real.D3DXCompileShader
+    D3DXCreateBuffer=ltr_d3dx9_29_real.D3DXCreateBuffer
+    D3DXDisassembleShader=ltr_d3dx9_29_real.D3DXDisassembleShader
+    D3DXGetShaderConstantTable=ltr_d3dx9_29_real.D3DXGetShaderConstantTable
+    D3DXGetShaderInputSemantics=ltr_d3dx9_29_real.D3DXGetShaderInputSemantics
+    D3DXGetShaderSize=ltr_d3dx9_29_real.D3DXGetShaderSize
+    D3DXGetShaderVersion=ltr_d3d9_real_observer_bootstrap.D3DXGetShaderVersion
+    D3DXLoadSurfaceFromMemory=ltr_d3dx9_29_real.D3DXLoadSurfaceFromMemory
+    D3DXLoadSurfaceFromSurface=ltr_d3dx9_29_real.D3DXLoadSurfaceFromSurface
+    D3DXLoadVolumeFromMemory=ltr_d3dx9_29_real.D3DXLoadVolumeFromMemory
+    D3DXPreprocessShader=ltr_d3dx9_29_real.D3DXPreprocessShader
+    D3DXQuaternionSquad=ltr_d3dx9_29_real.D3DXQuaternionSquad
+    D3DXQuaternionSquadSetup=ltr_d3dx9_29_real.D3DXQuaternionSquadSetup
+    D3DXSaveTextureToFileA=ltr_d3dx9_29_real.D3DXSaveTextureToFileA
+    D3DXSHEvalDirectionalLight=ltr_d3dx9_29_real.D3DXSHEvalDirectionalLight
+    D3DXSHProjectCubeMap=ltr_d3dx9_29_real.D3DXSHProjectCubeMap

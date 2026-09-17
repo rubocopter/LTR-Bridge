@@ -78,6 +78,10 @@ License note: NVIDIA SDK/runtime distribution is governed by NVIDIA terms, not b
 ## Microsoft graphics interop documentation
 
 - D3D11/D3D12 shared handles: https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-createsharedhandle
+- D3D11 `IDXGIResource1::CreateSharedHandle`, including the required NT-handle/keyed-mutex resource flags: https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgiresource1-createsharedhandle
+- D3D11 resource sharing flags: https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ne-d3d11-d3d11_resource_misc_flag
+- D3D11 fence signal semantics (`ID3D11DeviceContext4::Signal`): https://learn.microsoft.com/en-us/windows/win32/api/d3d11_3/nf-d3d11_3-id3d11devicecontext4-signal
+- D3D12 cross-API shared-resource compatibility tiers/formats: https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_shared_resource_compatibility_tier
 - D3D12 shared heaps: https://learn.microsoft.com/en-us/windows/win32/direct3d12/shared-heaps
 - D3D11 shared fence: https://learn.microsoft.com/en-us/windows/win32/api/d3d11_4/nf-d3d11_4-id3d11device5-opensharedfence
 - Windows graphics surface sharing: https://learn.microsoft.com/en-us/windows/win32/direct3darticles/surface-sharing-between-windows-graphics-apis

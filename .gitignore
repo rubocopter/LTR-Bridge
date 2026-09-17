@@ -1,5 +1,6 @@
 build/
 build-root/
+build-*/
 build-optical/
 out/
 .vs/

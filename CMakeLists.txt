@@ -99,6 +99,81 @@ if(LTR_ENABLE_D3D9EX_INTERCEPT_PROBE)
     endif()
 endif()
 
+option(LTR_ENABLE_D3D9_REAL_OBSERVER_PROBE "Build the Win32 real-game classic-D3D9 observation experiment" OFF)
+if(LTR_ENABLE_D3D9_REAL_OBSERVER_PROBE)
+    if(NOT WIN32)
+        message(FATAL_ERROR "real D3D9 observer probe requires Windows")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR "real D3D9 observer probe currently targets Win32/x86")
+    endif()
+    add_library(ltr_d3d9_real_observer_bootstrap SHARED
+        src/d3d9_real_bridge_probe/client.cpp
+        src/d3d9_real_bridge_probe/client.h
+        src/d3d9_real_bridge_probe/protocol.h
+        src/d3d9_real_observer_probe/proxy.cpp
+        src/d3d9_real_observer_probe/exports.def)
+    target_compile_features(ltr_d3d9_real_observer_bootstrap PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9_real_observer_bootstrap PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(ltr_d3d9_real_observer_bootstrap PRIVATE d3d11 dxgi)
+    set_target_properties(ltr_d3d9_real_observer_bootstrap PROPERTIES PREFIX "" OUTPUT_NAME "ltr_d3d9_real_observer_bootstrap")
+    if(MSVC)
+        target_compile_options(ltr_d3d9_real_observer_bootstrap PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)
+    endif()
+
+    set(LTR_D3D9_REAL_OBSERVER_FORWARDER_DIR "${CMAKE_CURRENT_BINARY_DIR}/d3d9-real-observer-forwarder")
+    set(LTR_D3D9_REAL_OBSERVER_FORWARDER "${LTR_D3D9_REAL_OBSERVER_FORWARDER_DIR}/d3dx9_29.dll")
+    add_custom_command(
+        OUTPUT "${LTR_D3D9_REAL_OBSERVER_FORWARDER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${LTR_D3D9_REAL_OBSERVER_FORWARDER_DIR}"
+        COMMAND ${CMAKE_LINKER} /DLL /NOENTRY /MACHINE:X86
+            /DEF:${CMAKE_CURRENT_SOURCE_DIR}/src/d3d9_real_observer_probe/forwarder.def
+            /OUT:${LTR_D3D9_REAL_OBSERVER_FORWARDER}
+            /IMPLIB:${LTR_D3D9_REAL_OBSERVER_FORWARDER_DIR}/d3dx9_29.lib
+        DEPENDS src/d3d9_real_observer_probe/forwarder.def
+        VERBATIM)
+    add_custom_target(ltr_d3d9_real_observer_probe ALL
+        DEPENDS "${LTR_D3D9_REAL_OBSERVER_FORWARDER}")
+endif()
+
+option(LTR_ENABLE_D3D9_REAL_BRIDGE_PROBE "Build the Win32 synthetic producer for the real-frame multiframe bridge contract" OFF)
+if(LTR_ENABLE_D3D9_REAL_BRIDGE_PROBE)
+    if(NOT WIN32)
+        message(FATAL_ERROR "real D3D9 bridge producer probe requires Windows")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR "real D3D9 bridge producer probe requires Win32/x86")
+    endif()
+    add_executable(ltr_d3d9_real_bridge_producer
+        src/d3d9_real_bridge_probe/client.cpp
+        src/d3d9_real_bridge_probe/client.h
+        src/d3d9_real_bridge_probe/producer.cpp
+        src/d3d9_real_bridge_probe/protocol.h)
+    target_compile_features(ltr_d3d9_real_bridge_producer PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9_real_bridge_producer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(ltr_d3d9_real_bridge_producer PRIVATE d3d11 dxgi)
+    if(MSVC)
+        target_compile_options(ltr_d3d9_real_bridge_producer PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)
+    endif()
+endif()
+
+option(LTR_ENABLE_D3D9_REAL_BRIDGE_SINK "Build the x64 sink for the real D3D9 frame bridge experiments" OFF)
+if(LTR_ENABLE_D3D9_REAL_BRIDGE_SINK)
+    if(NOT WIN32)
+        message(FATAL_ERROR "real D3D9 bridge sink requires Windows")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "real D3D9 bridge sink requires x64")
+    endif()
+    add_executable(ltr_d3d9_real_bridge_sink src/d3d9_real_bridge_sink/main.cpp)
+    target_compile_features(ltr_d3d9_real_bridge_sink PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9_real_bridge_sink PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_link_libraries(ltr_d3d9_real_bridge_sink PRIVATE d3d12 dxgi)
+    if(MSVC)
+        target_compile_options(ltr_d3d9_real_bridge_sink PRIVATE /W4 /permissive- /EHsc /Zc:__cplusplus)
+    endif()
+endif()
+
 option(LTR_ENABLE_DGVOODOO_ADDON_PROBE "Build the dgVoodoo2 D3D12 presentation-observer addon probe" OFF)
 set(LTR_DGVOODOO_API_ROOT "" CACHE PATH "Path to an external dgVoodoo API package root")
 if(LTR_ENABLE_DGVOODOO_ADDON_PROBE)

@@ -430,6 +430,125 @@ RuntimeResult run_runtime(const char *name, IDirect3D9 *d3d9,
   return result;
 }
 
+struct CrossRuntimeResult {
+  bool classic_created = false;
+  bool ex_created = false;
+  std::uint32_t ex_shared_created = 0;
+  std::uint32_t classic_opened = 0;
+  std::uint32_t passed_formats = 0;
+  std::uint64_t mismatches = 0;
+};
+
+CrossRuntimeResult run_ex_to_classic_open(IDirect3D9 *classic,
+                                          IDirect3D9Ex *ex, HWND hwnd,
+                                          D3D11Side &d3d11) {
+  CrossRuntimeResult result{};
+  if (!classic || !ex)
+    return result;
+
+  D3DPRESENT_PARAMETERS pp{};
+  pp.Windowed = TRUE;
+  pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+  pp.hDeviceWindow = hwnd;
+  pp.BackBufferFormat = D3DFMT_UNKNOWN;
+  pp.BackBufferWidth = 32;
+  pp.BackBufferHeight = 32;
+  pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+
+  ComPtr<IDirect3DDevice9> classic_device;
+  HRESULT hr = classic->CreateDevice(
+      D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+      D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &pp,
+      &classic_device);
+  if (FAILED(hr))
+    hr = classic->CreateDevice(
+        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &pp,
+        &classic_device);
+  if (FAILED(hr) || !classic_device) {
+    std::cout << "cross_runtime=ex_to_classic classic_create_hr=0x" << std::hex
+              << static_cast<unsigned long>(hr) << std::dec << "\n";
+    return result;
+  }
+  result.classic_created = true;
+
+  ComPtr<IDirect3DDevice9Ex> ex_device;
+  hr = ex->CreateDeviceEx(
+      D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+      D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &pp,
+      nullptr, &ex_device);
+  if (FAILED(hr) || !ex_device) {
+    std::cout << "cross_runtime=ex_to_classic ex_create_hr=0x" << std::hex
+              << static_cast<unsigned long>(hr) << std::dec << "\n";
+    return result;
+  }
+  result.ex_created = true;
+
+  const GenerationSpec spec{64, 64};
+  for (const auto &format : kFormats) {
+    HANDLE shared_handle = nullptr;
+    ComPtr<IDirect3DTexture9> ex_texture;
+    const HRESULT ex_texture_hr = ex_device->CreateTexture(
+        spec.width, spec.height, 1, 0, format.d3d9_format, D3DPOOL_DEFAULT,
+        &ex_texture, &shared_handle);
+    std::cout << "cross_runtime=ex_to_classic format=" << format.name
+              << " ex_create_hr=0x" << std::hex
+              << static_cast<unsigned long>(ex_texture_hr) << std::dec
+              << " shared_handle=" << (shared_handle ? 1 : 0);
+    if (FAILED(ex_texture_hr) || !shared_handle) {
+      std::cout << " classic_open_skipped=1\n";
+      continue;
+    }
+    ++result.ex_shared_created;
+
+    HANDLE classic_handle = shared_handle;
+    ComPtr<IDirect3DTexture9> classic_texture;
+    const HRESULT classic_open_hr = classic_device->CreateTexture(
+        spec.width, spec.height, 1, 0, format.d3d9_format, D3DPOOL_DEFAULT,
+        &classic_texture, &classic_handle);
+    std::cout << " classic_open_hr=0x" << std::hex
+              << static_cast<unsigned long>(classic_open_hr) << std::dec
+              << " classic_texture=" << (classic_texture ? 1 : 0)
+              << " handle_preserved="
+              << (classic_handle == shared_handle ? 1 : 0) << "\n";
+    if (FAILED(classic_open_hr) || !classic_texture)
+      continue;
+    ++result.classic_opened;
+
+    std::uint64_t case_mismatches = 0;
+    double d3d9_sync_sum_ms = 0.0;
+    double d3d11_readback_sum_ms = 0.0;
+    if (!validate_shared_texture(
+            classic_device.Get(), classic_texture.Get(), shared_handle, format,
+            d3d11, spec, 1000U + result.classic_opened * 16U,
+            case_mismatches, d3d9_sync_sum_ms, d3d11_readback_sum_ms)) {
+      continue;
+    }
+    result.mismatches += case_mismatches;
+    if (case_mismatches == 0)
+      ++result.passed_formats;
+    std::cout << "cross_runtime=ex_to_classic format=" << format.name
+              << " frames=" << kFramesPerGeneration
+              << " mismatches=" << case_mismatches
+              << " renderer_transfer=classic_stretchrect_to_ex_created_shared"
+              << " RESULT " << (case_mismatches == 0 ? "PASS" : "FAIL")
+              << "\n";
+  }
+
+  std::cout << "cross_runtime=ex_to_classic ex_shared_created="
+            << result.ex_shared_created
+            << " classic_opened=" << result.classic_opened
+            << " passed_formats=" << result.passed_formats
+            << " mismatches=" << result.mismatches
+            << " RESULT "
+            << (result.classic_opened > 0 &&
+                        result.classic_opened == result.passed_formats
+                    ? "PASS"
+                    : "NO_PATH")
+            << "\n";
+  return result;
+}
+
 } // namespace
 
 int wmain() {
@@ -476,6 +595,7 @@ int wmain() {
 
   ComPtr<IDirect3D9Ex> ex;
   RuntimeResult ex_result{};
+  RuntimeResult ex_base_result{};
   const HRESULT ex_create = Direct3DCreate9Ex(D3D_SDK_VERSION, &ex);
   if (SUCCEEDED(ex_create) && ex) {
     ex_result = run_runtime(
@@ -491,10 +611,45 @@ int wmain() {
           return check(hr, "IDirect3D9Ex::CreateDeviceEx");
         },
         d3d11);
+
+    // A legacy game only knows IDirect3D9::CreateDevice. Check whether an
+    // IDirect3D9Ex root can be exposed through that base interface while still
+    // producing an Ex-capable device and the same shared-resource behavior.
+    // If this works, intercepting Direct3DCreate9 and substituting an Ex root is
+    // a much smaller real-game experiment than translating the whole renderer.
+    IDirect3D9 *ex_as_base = ex.Get();
+    ex_base_result = run_runtime(
+        "ex_base_create_device", ex_as_base,
+        [&](ComPtr<IDirect3DDevice9> &device) {
+          HRESULT hr = ex_as_base->CreateDevice(
+              D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+              D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED,
+              &pp, &device);
+          if (FAILED(hr))
+            hr = ex_as_base->CreateDevice(
+                D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+                D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED,
+                &pp, &device);
+          if (FAILED(hr) || !device)
+            return check(hr, "IDirect3D9Ex-as-IDirect3D9::CreateDevice");
+          ComPtr<IDirect3DDevice9Ex> device_ex;
+          const HRESULT qi_hr = device->QueryInterface(IID_PPV_ARGS(&device_ex));
+          std::cout << "runtime=ex_base_create_device device_qi_ex="
+                    << (SUCCEEDED(qi_hr) && device_ex ? 1 : 0)
+                    << " qi_hr=0x" << std::hex
+                    << static_cast<unsigned long>(qi_hr) << std::dec << "\n";
+          return SUCCEEDED(qi_hr) && device_ex;
+        },
+        d3d11);
   } else {
     std::cerr << "Direct3DCreate9Ex failed hr=0x" << std::hex
               << static_cast<unsigned long>(ex_create) << std::dec << "\n";
   }
+
+  CrossRuntimeResult cross_result{};
+  if (classic && ex)
+    cross_result =
+        run_ex_to_classic_open(classic.Get(), ex.Get(), hwnd, d3d11);
 
   DestroyWindow(hwnd);
   const bool classic_pass = classic_result.created &&
@@ -503,6 +658,9 @@ int wmain() {
                                 classic_result.passed_formats;
   const bool ex_pass = ex_result.created && ex_result.opened_formats > 0 &&
                        ex_result.opened_formats == ex_result.passed_formats;
+  const bool ex_base_pass =
+      ex_base_result.created && ex_base_result.opened_formats > 0 &&
+      ex_base_result.opened_formats == ex_base_result.passed_formats;
   std::cout << "summary classic_created=" << classic_result.created
             << " classic_opened_formats=" << classic_result.opened_formats
             << " classic_passed_formats=" << classic_result.passed_formats
@@ -512,10 +670,22 @@ int wmain() {
             << " ex_opened_formats=" << ex_result.opened_formats
             << " ex_passed_formats=" << ex_result.passed_formats
             << " ex_mismatches=" << ex_result.mismatches
-            << " ex_device_resets=" << ex_result.device_resets << "\n";
+            << " ex_device_resets=" << ex_result.device_resets
+            << " ex_base_created=" << ex_base_result.created
+            << " ex_base_opened_formats=" << ex_base_result.opened_formats
+            << " ex_base_passed_formats=" << ex_base_result.passed_formats
+            << " ex_base_mismatches=" << ex_base_result.mismatches
+            << " ex_base_device_resets=" << ex_base_result.device_resets
+            << " cross_ex_shared_created=" << cross_result.ex_shared_created
+            << " cross_classic_opened=" << cross_result.classic_opened
+            << " cross_passed_formats=" << cross_result.passed_formats
+            << " cross_mismatches=" << cross_result.mismatches << "\n";
   std::cout << "classic_runtime_result=" << (classic_pass ? "PASS" : "NO_PATH")
             << " ex_runtime_result=" << (ex_pass ? "PASS" : "NO_PATH")
-            << "\nRESULT " << ((classic_pass || ex_pass) ? "PASS" : "FAIL")
+            << " ex_base_runtime_result="
+            << (ex_base_pass ? "PASS" : "NO_PATH")
+            << "\nRESULT "
+            << ((classic_pass || ex_pass || ex_base_pass) ? "PASS" : "FAIL")
             << "\n";
-  return (classic_pass || ex_pass) ? 0 : 4;
+  return (classic_pass || ex_pass || ex_base_pass) ? 0 : 4;
 }

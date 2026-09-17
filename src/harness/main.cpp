@@ -1,4 +1,4 @@
-#include "temporal_frame.h"
+#include "../temporal/temporal_frame.h"
 #include "../temporal/temporal_sequence.h"
 
 #include <Windows.h>
@@ -99,8 +99,9 @@ std::uint32_t g_pending_height = 0;
 Scenario g_scenario = Scenario::static_scene;
 DebugView g_debug_view = DebugView::scene;
 std::uint64_t g_frame_index = 0;
+std::uint32_t g_resource_generation = 0;
 std::uint32_t g_history_generation = 0;
-ltr::harness::HistoryResetReason g_pending_reset = ltr::harness::HistoryResetReason::startup;
+ltr::temporal::HistoryResetReason g_pending_reset = ltr::temporal::HistoryResetReason::startup;
 bool g_previous_valid = false;
 bool g_self_test = false;
 XMMATRIX g_previous_world = XMMatrixIdentity();
@@ -114,7 +115,7 @@ float g_current_hud_center_x = 0.5f;
 float g_previous_hud_center_x = 0.5f;
 float g_last_previous_hud_center_x = 0.5f;
 std::vector<std::uint32_t> g_previous_surface_ids;
-ltr::harness::TemporalFrameDescription g_last_frame{};
+ltr::temporal::TemporalFrameDescription g_last_frame{};
 float g_cpu_probe_motion = 0.0f;
 
 ComPtr<ID3D11Device> g_device;
@@ -446,7 +447,8 @@ void CreateFrameResources(std::uint32_t width, std::uint32_t height) {
     D3D11_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_R32_FLOAT; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srv.Texture2D.MipLevels = 1;
     CheckHr(g_device->CreateShaderResourceView(g_depth.Get(), &srv, &g_depth_srv), "CreateSRV(depth)");
 
-    g_width = width; g_height = height; g_previous_valid = false; g_previous_surface_ids.clear();
+    g_width = width; g_height = height; ++g_resource_generation;
+    g_previous_valid = false; g_previous_surface_ids.clear();
 }
 
 void CreateDeviceAndPipeline() {
@@ -876,7 +878,7 @@ void Render(double seconds) {
     if (g_pending_width && g_pending_height) {
         if (g_pending_width != g_width || g_pending_height != g_height) {
             CreateFrameResources(g_pending_width, g_pending_height);
-            g_pending_reset = ltr::harness::HistoryResetReason::resize;
+            g_pending_reset = ltr::temporal::HistoryResetReason::resize;
         }
         g_pending_width = g_pending_height = 0;
     }
@@ -914,12 +916,13 @@ void Render(double seconds) {
 
     g_last_frame = {};
     g_last_frame.identity.frame_index = g_frame_index; g_last_frame.identity.view_index = 0;
+    g_last_frame.identity.resource_generation = g_resource_generation;
     g_last_frame.identity.history_generation = g_history_generation; g_last_frame.identity.reset_reason = g_pending_reset;
-    if (g_pending_reset != ltr::harness::HistoryResetReason::none) g_last_frame.identity.history_generation = ++g_history_generation;
+    if (g_pending_reset != ltr::temporal::HistoryResetReason::none) g_last_frame.identity.history_generation = ++g_history_generation;
     g_last_frame.render_width = g_last_frame.output_width = g_width; g_last_frame.render_height = g_last_frame.output_height = g_height;
     g_last_frame.jitter_x_pixels = jitterX; g_last_frame.jitter_y_pixels = jitterY;
-    g_last_frame.motion.coverage = ltr::harness::coverage_camera | ltr::harness::coverage_rigid_objects;
-    g_last_frame.motion.known_exclusions = ltr::harness::coverage_skinned_geometry | ltr::harness::coverage_particles | ltr::harness::coverage_transparency | ltr::harness::coverage_hud;
+    g_last_frame.motion.coverage = ltr::temporal::coverage_camera | ltr::temporal::coverage_rigid_objects;
+    g_last_frame.motion.known_exclusions = ltr::temporal::coverage_skinned_geometry | ltr::temporal::coverage_particles | ltr::temporal::coverage_transparency | ltr::temporal::coverage_hud;
     g_last_frame.motion.jitter_included = false;
 
     XMMATRIX previousWorld = g_previous_world, previousVp = g_previous_vp;
@@ -927,7 +930,7 @@ void Render(double seconds) {
     float previousHudCenterX = g_previous_hud_center_x;
     g_last_previous_jitter_x = g_previous_jitter_x;
     g_last_previous_jitter_y = g_previous_jitter_y;
-    if (!g_previous_valid || g_pending_reset != ltr::harness::HistoryResetReason::none) {
+    if (!g_previous_valid || g_pending_reset != ltr::temporal::HistoryResetReason::none) {
         previousWorld = world; previousVp = vp;
         previousDeformationPhase = deformationPhase;
         previousHudCenterX = hudCenterX;
@@ -1037,7 +1040,7 @@ void Render(double seconds) {
     g_previous_jitter_x = jitterX; g_previous_jitter_y = jitterY;
     g_previous_deformation_phase = deformationPhase;
     g_previous_hud_center_x = hudCenterX;
-    g_previous_valid = true; g_pending_reset = ltr::harness::HistoryResetReason::none;
+    g_previous_valid = true; g_pending_reset = ltr::temporal::HistoryResetReason::none;
     ++g_frame_index; UpdateTitle();
 }
 
@@ -1174,7 +1177,7 @@ bool ValidateStats(const ReadbackStats& stats, bool expectMotion, bool requireSt
 bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
                       bool expectMotion, bool requireStaticCoverage, std::ostringstream& report) {
     g_scenario = scenario;
-    g_pending_reset = ltr::harness::HistoryResetReason::scenario_change;
+    g_pending_reset = ltr::temporal::HistoryResetReason::scenario_change;
     const bool expectCameraMotion = scenario == Scenario::camera_translate || scenario == Scenario::camera_rotate;
     const bool expectCameraOnlyLimitation = scenario == Scenario::rigid_object ||
                                             scenario == Scenario::deforming_geometry ||
@@ -1190,7 +1193,7 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     const bool resetReconstructionOk = ValidateReconstruction(resetReconstructionStats, false, false);
     const bool resetHistoryOk = ValidateHistoryValidity(resetHistoryStats, false, scenario);
     const bool resetOk = g_last_frame.identity.history_generation == expectedGeneration &&
-                         g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::scenario_change &&
+                         g_last_frame.identity.reset_reason == ltr::temporal::HistoryResetReason::scenario_change &&
                          ValidateStats(resetStats, false, false) && resetReconstructionOk && resetHistoryOk;
     AppendStats(report, name, "reset", resetStats, resetOk);
     AppendReconstructionStats(report, name, "reset", resetReconstructionStats, resetReconstructionOk);
@@ -1207,7 +1210,7 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     const bool steadyHistoryOk = ValidateHistoryValidity(steadyHistoryStats, true, scenario);
     const bool steadyOk = g_last_frame.identity.frame_index == expectedFrame &&
                           g_last_frame.identity.history_generation == expectedGeneration &&
-                          g_last_frame.identity.reset_reason == ltr::harness::HistoryResetReason::none &&
+                          g_last_frame.identity.reset_reason == ltr::temporal::HistoryResetReason::none &&
                           ValidateStats(steadyStats, expectMotion, requireStaticCoverage) && steadyReconstructionOk && steadyHistoryOk;
     AppendStats(report, name, "steady", steadyStats, steadyOk);
     AppendReconstructionStats(report, name, "steady", steadyReconstructionStats, steadyReconstructionOk);
@@ -1248,8 +1251,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         else if (wParam == VK_TAB) g_debug_view = static_cast<DebugView>((static_cast<std::uint32_t>(g_debug_view) + 1u) % static_cast<std::uint32_t>(DebugView::count));
-        else if (wParam == 'R') g_pending_reset = ltr::harness::HistoryResetReason::manual;
-        else if (wParam >= '1' && wParam <= '9') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::harness::HistoryResetReason::scenario_change; }
+        else if (wParam == 'R') g_pending_reset = ltr::temporal::HistoryResetReason::manual;
+        else if (wParam >= '1' && wParam <= '9') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::temporal::HistoryResetReason::scenario_change; }
         return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, wParam, lParam);
