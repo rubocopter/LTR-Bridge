@@ -16,17 +16,35 @@ LTR Bridge explores how older Direct3D 8/9/10/11 games could eventually feed mod
 
 ## What has been demonstrated
 
-- Host-tested **x86 D3D11 → x64 D3D12** GPU transport with synchronization, resource replacement and stereo isolation.
-- Host-tested legacy relay paths from **D3D9Ex** and **D3D10.1** into the modern transport.
-- A real Call of Juarez D3D9 compatibility path has carried validated game-frame data into the x64 host.
-- An optional **XeSS 3.0.2 Native AA** probe and an isolated **OpenXR** runtime bootstrap are working in controlled tests.
+Current evidence as of **2026-10-01**, scoped to the tested builds and host:
+
+| Area | Evidence and limit |
+| --- | --- |
+| Temporal inputs | **Host-tested / visual-validated** in a controlled D3D11 harness: readable depth, camera/projection jitter, ground-truth motion vectors and explicit history reset. Real-game temporal provenance remains open. |
+| GPU transport | **Host-tested** x86 D3D11 → x64 D3D12 synchronization, resource replacement, backpressure, controlled failures and synthetic per-eye history isolation. D3D9Ex and D3D10.1 relays are host-tested separately. |
+| Clean Steam Call of Juarez | **Live-tested** bounded D3D9Ex compatibility and two-slot color transport across an engine reset: the stalled old generation is cancelled and the replacement completes 12/12 frames with zero sampled mismatches. Validation checks one pixel per frame, not the full image. |
+| Reconstruction and XR | **Host-tested** XeSS **3.0.2 Native AA 1:1** in a controlled D3D12 probe, plus an isolated OpenXR runtime bootstrap. Neither establishes reconstructed game output or headset presentation. |
+
+The observed Call of Juarez MANAGED-resource startup failures are resolved for
+the exercised resource profiles. Broad D3D9Ex compatibility remains unproven.
 
 ## What remains open
 
-- Reliable temporal inputs from real legacy engines, especially motion vectors and depth semantics.
-- Sustained multiframe real-game integration and reset/resource-generation handling.
-- Reconstruction output integrated back into a game or VR presentation path.
-- Headset and performance validation.
+The immediate **experiment-pending** gate is coherent real-game color, readable
+depth, effective camera, jitter and motion vectors, with identity preserved across
+skipped frames, resource generations and views/eyes. Then feed XeSS Native AA at
+1:1 and return its result to the game.
+
+Sustained transport, broader reset/device-loss recovery, full-image correctness,
+end-to-end reconstruction quality, latency and headset validation remain open.
+The bounded reset result above does not close those gates.
+
+## Project boundaries
+
+LTR Bridge is independent of [Call of Juarez VR](https://github.com/rubocopter/call_of_juarez_vr).
+The mod's accepted OpenVR stereo, normal shutdown and configured-HMD rate cap
+are separate evidence; they do not validate LTR's D3D12 reconstruction or OpenXR
+path. This project does not add dependencies to existing mod repositories.
 
 ## Start with the docs
 

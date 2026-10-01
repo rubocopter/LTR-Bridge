@@ -2,6 +2,20 @@
 
 The roadmap is evidence-driven. Items must be rechecked against repository state before work begins.
 
+## Current gate — 2026-10-01
+
+**Live-tested:** the clean Steam Call of Juarez D3D9Ex observer now completes a
+bounded two-slot multiframe color transfer through an engine reset. The stalled
+old generation is cancelled; the replacement completes 12/12 frames with zero
+sampled mismatches. This is one-pixel-per-frame validation on the exercised
+build/host, not full-image or general device-loss acceptance.
+
+**Experiment-pending:** establish coherent real-game depth/camera/jitter/MV and
+history/view identity, then run the host-tested XeSS 3.0.2 Native AA backend at
+1:1 and return the output to the game. Sustained renderer lifecycle, quality,
+latency and headset reconstruction remain separate gates. CoJ VR's OpenVR
+product validation is independent of this research path.
+
 ## Phase 0 — research baseline
 
 Status: **implemented as the research baseline; later phases now provide host-tested evidence for the temporal harness, x86/x64 transport, XeSS Native AA, OpenXR runtime bootstrap and the current-host D3D9Ex relay**.

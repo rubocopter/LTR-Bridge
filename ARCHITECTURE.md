@@ -105,34 +105,34 @@ The following decisions remain deliberately open:
 
 ## Next validation gate: one real vertical slice
 
-Call of Juarez has now supplied the real renderer boundary and a complete one-shot cross-bitness color path. The game still calls the legacy D3D9 API, but an experimental `Direct3DCreate9 -> Direct3DCreate9Ex` substitution returns the Ex object through its base `IDirect3D9` interface. The game then creates an Ex-capable device through the ordinary `CreateDevice` call. At the real `Present` boundary, a same-format shared relay accepts the `2560x1440` frame with `StretchRect`, completes through a D3D9 event query and opens in private x86 D3D11. A game-free probe validates the persistent process/fence topology: x64 D3D12 owns two shared BGRA8 slots and `done`, x86 D3D11 opens those slots and owns `ready`, and a compact bootstrap duplicates the resource/fence handles into x86. The client code from that probe is now connected to the observer with backpressure-aware capture and reset teardown. The join is implemented and compile-tested; the next experiment is to prove it and its resource generations in the game:
+Call of Juarez supplies the real renderer boundary and a **live-tested bounded** multiframe color path. The game still calls the legacy D3D9 API, but an experimental `Direct3DCreate9 -> Direct3DCreate9Ex` substitution returns the Ex object through its base `IDirect3D9` interface. The game creates an Ex-capable device through the ordinary `CreateDevice` call. At `Present`, a same-format shared relay accepts color through `StretchRect`, completes through a D3D9 event query and opens in private x86 D3D11. The persistent topology makes x64 D3D12 own two shared BGRA8 slots and `done`, while x86 D3D11 opens the slots and owns `ready`; a bootstrap duplicates the resource/fence handles into x86. The shared client is connected to the observer with backpressure-aware capture and reset teardown. A real engine reset cancelled the stalled old generation and the replacement at `1920x1080` completed 12/12 frames, matching ready/done values and 12 consumer copies with zero sampled mismatches. This checks one pixel per frame on the exercised build/host. Coherent temporal inputs and reconstruction return are the next integration gate:
 
 ```text
 real Call of Juarez D3D9 API
         |
         v
-Direct3DCreate9 -> D3D9Ex compatibility substitution (host-tested)
+Direct3DCreate9 -> D3D9Ex compatibility substitution (bounded live-tested)
         |
         v
-Present color -> shared D3D9Ex relay -> D3D11 x86 (host-tested)
+Present color -> shared D3D9Ex relay -> D3D11 x86 (bounded live-tested)
         |
         v
-shared D3D11 transport client -> D3D12 x64 (offline host-tested)
+shared D3D11 transport client -> D3D12 x64 (bounded live-tested)
         |
         v
-x64-owned shared slots + ready/done ring (observer join compile-tested; live test pending)
+x64-owned shared slots + ready/done ring (reset cancellation/replacement live-tested)
         |
         v
-TemporalFrame semantics
+TemporalFrame semantics (real-game provenance experiment-pending)
         |
         v
-XeSS Native AA 1:1
+XeSS 3.0.2 Native AA 1:1 (controlled probe host-tested; game integration pending)
         |
         v
-game output
+game output (experiment-pending)
 ```
 
-The direct shared-resource shortcut is not available to a true classic-D3D9 device on the current host: classic D3D9 cannot create the tested shared textures, and a classic device also cannot open the tested handles created by another D3D9Ex device. The compatibility substitution avoids that boundary by making the game's own device Ex-capable while preserving the D3D9 interface it consumes. The one-shot x86/x64 result removes format/bitness interoperability as a blocker, while the offline two-slot probe removes the basic ready/done/backpressure mechanics as the current blocker. The first D3D11-owned persistent-slot experiment is deliberately not part of the architecture: its fences advanced while D3D12 content validation remained zero on this host. The current success gate is sustaining the implemented join across real frames and resource generations, then following frame identity, reset state, color/depth/MV semantics and history validity through reconstruction. The adapter fails open: transport loss disables the experiment while the original renderer path continues.
+The direct shared-resource shortcut is not available to a true classic-D3D9 device on the current host: classic D3D9 cannot create the tested shared textures, and a classic device also cannot open the tested handles created by another D3D9Ex device. The compatibility substitution avoids that boundary by making the game's own device Ex-capable while preserving the D3D9 interface it consumes. The first D3D11-owned persistent-slot experiment is deliberately not part of the architecture: its fences advanced while D3D12 content validation remained zero on this host. The x64-owned replacement now has bounded real-game reset-generation evidence. The immediate success gate follows frame identity, readable depth, effective camera, jitter/MV semantics and history validity through reconstruction and game output. Sustained transport, broader reset/device-loss timing and full-image correctness remain open. The adapter is implemented to fail open: transport loss disables the experiment while the original renderer path continues; that policy still requires broader live failure coverage.
 
 Keep validation and runtime responsibilities separate. CPU readback, pixel-by-pixel verification and synchronous callback logging remain diagnostic tools. Any synchronization retained in the frame path must be justified by measurements from the real integration rather than inherited from a probe.
 

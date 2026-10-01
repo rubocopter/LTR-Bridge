@@ -2,6 +2,30 @@
 
 Updated: 2026-10-01.
 
+## Documentation checkpoint — current project landings
+
+**Verified / implemented:** both project READMEs now distinguish accepted bounded
+results from current gates. LTR's architecture, compatibility matrix, roadmap,
+D3D9 conclusion and agent phase reflect the already live-tested reset-generation
+join rather than its earlier compile-only state. CoJ's landing and roadmap
+reflect accepted native transport, configured-HMD rate cap and normal-quit
+shutdown; the new held-shoulder menu pointer remains host-tested with physical
+acceptance pending. Body/arm IK and weapon alignment remain unaccepted.
+
+This is a documentation-only pass. No new runtime, reconstruction, headset or
+performance result is claimed. Preserve the active menu candidate below: its
+immutable source identity remains `b67c051287e4259aa074ceaa57b1f34eb5df6b47`
+even after newer documentation commits. Earlier checkpoints below are historical
+and must not override the latest result or active candidate.
+
+**Verified / published:** CoJ documentation is pushed to `origin/main` as
+`57923db1de3a95e45f92d72beaa585bb39477678`. Local link checks resolve 11 links
+in each repository's reviewed documents; CoJ's landing image and menu acceptance
+anchor also resolve. Both diffs pass whitespace checks. Read-only CoJ status
+still reports the same startup candidate, game not running, and its deployed
+proxy SHA-256 matches the value recorded below. No build or physical run was
+performed for this documentation-only update.
+
 ## Latest checkpoint — HMD rate cap accepted; menu ownership correction
 
 **Verified / live-tested / performance-validated for bounded cadence:** user
@@ -75,7 +99,7 @@ and temporal/backend work are outside this isolated menu gesture. Local procedur
 and prepare log: CoJ ignored `work/transport-diagnosis/UI_POINTER_CANDIDATE.md`
 and `prepare-pointer-ownership.log`.
 
-## Latest checkpoint — published CoJ baseline and HMD cadence follow-up
+## Historical checkpoint — published CoJ baseline and HMD cadence follow-up
 
 **Verified / published:** separate CoJ repository checkpoint
 `30b99ad0a49909834f77a7c49bb32a02900ec267` is pushed to `origin/main`.
@@ -149,7 +173,7 @@ another candidate over this staging. Raw procedure/provenance are retained in
 CoJ ignored `work/transport-diagnosis/HMD_PACING_CANDIDATE.md` and
 `prepare-hmd-pacing.log`.
 
-## Latest checkpoint — bounded CoJ transport cadence accepted
+## Historical checkpoint — bounded CoJ transport cadence accepted
 
 **Verified / live-tested (2026-10-01):** user completed cadence candidate
 `20260930T232438Z-8fa08df634c1` and finish. Package SHA-256
@@ -223,7 +247,7 @@ was launched automatically. Raw staging details remain in CoJ ignored
 This active staging supersedes the previous checkpoint's 'staging none' state;
 its successful shutdown result and evidence package remain unchanged.
 
-## Latest checkpoint — CoJ normal-quit shutdown accepted
+## Historical checkpoint — CoJ normal-quit shutdown accepted
 
 **Live-tested / verified (2026-10-01):** the user manually ran and finished the
 separately authorized CoJ transport candidate `20260930T230726Z-960ce616f954`.
