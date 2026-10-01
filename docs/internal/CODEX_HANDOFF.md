@@ -10,6 +10,8 @@ It contains the bounded D3D9Ex compatibility, asymmetric flat presentation,
 consumer-copy drain and exact-build pre-exit OpenVR shutdown corrections,
 with the already accepted physical evidence documented in the sections below.
 This publication introduces no CoJ dependency into LTR.
+The LTR research/lifecycle checkpoint is separately pushed as
+`7da5ba8f8883ff7cb2b9266b445c0a397dccfdaa`.
 
 **Observed / user-reported:** the operator identifies the previous approximately
 136 Hz producer rate as desktop limited and reports a 90 Hz configured visor.
@@ -19,12 +21,15 @@ nor render pairs are a measurement of configured headset refresh. The old binary
 did not log that property; the exact desktop limit remains user-reported.
 
 **Implemented / host-tested / experiment-pending:** the separately authorized
-CoJ follow-up reads OpenVR v2.15.6 `Prop_DisplayFrequency_Float` on the presenter
+CoJ follow-up, pushed as `e479e447e74871cfa37ab790ba2775234bd93a75`,
+reads OpenVR v2.15.6 `Prop_DisplayFrequency_Float` on the presenter
 owner, caps one producer frame/pair to that rate and retains `WaitGetPoses` as
 the compositor cadence owner. It avoids monitor-vsync waits only when valid HMD
 timing is paired with a successful game-owned Create/Reset. Missing later timing
 retains the last cap until a safe Reset restores the latest requested interval;
 late initial timing waits for that Reset. Flat/native transitions share pacing.
+Failed attempts restore the caller's interval before retry; tests cover reuse
+of the same parameter object without the game rewriting that field.
 This is a rate cap, not phase synchronization. Separate summary fields report
 configured HMD refresh, target, producer cadence and compositor delivery. Fresh
 CoJ Release CTest passes 33 tests, with 1 classic-sharing skip and 0 failures;
@@ -39,8 +44,37 @@ pass. Fresh synthetic 12-frame runs at 64x64 and 2560x1440 with a 50 ms stall
 complete with ready/done=12, 12 consumer copies and zero sampled mismatches.
 Five fault-injection cases and sink scheduling pass. Eight bootstrap publication
 failures return the process handle count to its baseline (542 -> 542).
-These are scoped host
-checks; no new physical CoJ or reconstruction result is implied.
+These are scoped host checks; no new physical CoJ or reconstruction result
+is implied.
+
+## Active candidate — configured HMD rate (physical result pending)
+
+**Host-tested / verified staging (2026-10-01):** fresh CoJ prepare from clean
+published commit `e479e447e74871cfa37ab790ba2775234bd93a75` rebuilt Release
+and passed 33 tests, with 1 classic-sharing skip and 0 failures. Run
+`20261001T000751Z-095a23ec5916`, manifest
+`CA8D4223E9A0CF434DA69ADFDE251307B652971FBFFB1DB56363BD9BCFE8C7AD`,
+proxy `4C84AA245EF96B161047A0A36CA44F48A4D7E7075F00CEA9F4DE0F3677097F33`.
+All four deployed artifact hashes match the manifest; source is clean and
+reproducible from the commit. Diagnostic control is `vr-full`, tracking,
+gameplay input, capture and both eye renders enabled, body IK disabled.
+Read-only status confirms game not running and native-stereo staging active,
+with reversible 1920x1080/FSAA0 video settings. No game/SteamVR auto launch.
+
+**Experiment-pending:** operator should manually start SteamVR at the configured
+90 Hz, start CoJ, reach gameplay, make slow/fast head turns and move normally for
+30–60 seconds, then quit normally and run `pwsh -File tools/vr_test.ps1 finish`
+from the CoJ repository. The physical summary must report HMD refresh/producer
+target 90 Hz separately from update, pair and new/total presenter rates; rendering
+should follow that target rather than the earlier approximately 136 Hz producer
+baseline. Verify stable depth/head motion, no transport fallback and complete
+shutdown. CPU render-scheduling wait is intentional and separately measured;
+producer/consumer GPU waits remain a different metric. This rate-cap experiment
+does not validate compositor phase alignment, reset with pending frames, device
+loss, temporal inputs, reconstruction or body/UI/weapon work. Do not prepare
+another candidate over this staging. Raw procedure/provenance are retained in
+CoJ ignored `work/transport-diagnosis/HMD_PACING_CANDIDATE.md` and
+`prepare-hmd-pacing.log`.
 
 ## Latest checkpoint — bounded CoJ transport cadence accepted
 
@@ -88,9 +122,10 @@ production reset/device loss and abnormal exit remain independent renderer
 gates. LTR temporal-input provenance and XeSS Native AA return/composition remain
 unproved and independent; this D3D9Ex/D3D11/OpenVR result adds no D3D12 transport
 or reconstruction validation. The active-candidate section below is historical:
-no candidate is currently staged.
+after that accepted run no candidate remained staged. The current HMD-rate
+candidate is described above.
 
-## Active candidate — cadence trace ready
+## Historical candidate — cadence trace (completed)
 
 **Host-tested / verified staging (2026-10-01):** user authorized proceeding with
 the remaining cadence/per-eye gate. Fresh CoJ `prepare` rebuilt Release and passed
