@@ -9,14 +9,18 @@ The contract must describe temporal meaning separately from transport representa
 ```text
 TemporalFrameInput
   identity:
+    resource_generation
     frame_index
+    camera_or_view_id?
     history_reset
     eye_id?                 # VR only
     predicted_display_time? # VR only
+    frame_delta_ms?
 
   extents:
     render_width/height
     output_width/height
+    color/depth/motion valid subrects
 
   color:
     resource
@@ -29,6 +33,7 @@ TemporalFrameInput
     convention
     near/far?
     inverted?
+    infinite_far?
     linear?
 
   motion:
@@ -42,6 +47,7 @@ TemporalFrameInput
     coverage?
     known_exclusions?
     confidence_or_validity?
+    producer_stream_id?
 
   camera:
     view/projection
@@ -58,6 +64,10 @@ TemporalFrameInput
 ```
 
 This is a semantic model, not a C++ layout.
+
+The 2026-09-23 review of `Beren5556/W40KRT_VR@929bc9c1626b92d102def4ab405bf943c83bab24` provides additional **observed** evidence for these fields. Its per-eye NGX job ABI identifies generation/frame/camera/eye and carries subrects, jitter and MV scale; its optional OFXR provider V2 additionally publishes depth convention, frame delta, reset and stream identity and explicitly rejects stale/queue-mismatched pairs. Those concrete layouts are implementation-specific evidence, not the LTR Bridge ABI.
+
+The 2026-09-30 recheck at `Beren5556/W40KRT_VR@0fb98a2f991075256dffd2117f9d458360caa324` adds a second identity boundary: reconstruction configuration has its own generation/status, and the OFXR join now rejects neural-backed synthesis unless backend generation and both completed eye-frame IDs match the game frame. **Observed:** downstream consumers need explicit producer/backend readiness in addition to frame-resource identity; model/preset choice remains backend configuration rather than a temporal-frame field.
 
 ## Separation of concerns
 
@@ -148,9 +158,13 @@ History reset should be triggered by more than a resize. Candidate reasons inclu
 - entering/exiting a menu or video path when game frames are no longer temporally continuous;
 - eye target recreation in VR.
 
+History/resource generation should also be monotonic across recreation so a delayed job or guide cannot become valid merely because a pointer/slot was reused. Where temporal inputs can arrive through different producers, pair them by generation/frame/view (or an equivalently strong stream identity) and reject stale or ownership-mismatched data.
+
 ## VR extension
 
 VR requires at minimum an `eye_id` or equivalent view identity. Histories must not be accidentally shared between eyes. Predicted display time and pose provenance may become necessary for diagnosing head-motion vectors and latency, but should not be required in the first flat-screen ABI.
+
+The W40KRT_VR beta provides **observed** source evidence for treating this as ownership as well as metadata: its left/right TAA state is independent and history seeding first verifies that the live camera and camera-buffer owner match the eye being processed. A future stereo probe should include an explicit ownership-mismatch rejection test in addition to checking that left/right pixels differ as expected.
 
 ## ABI decision gate
 

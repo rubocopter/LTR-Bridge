@@ -1,6 +1,6 @@
 # Case study — Rogue Trader DLSS / EnhancedGraphics
 
-Research date: 2026-09-13.
+Research dates: 2026-09-13; public-VR-beta follow-up 2026-09-23; upstream recheck 2026-09-30.
 
 Public upstream targets reviewed:
 
@@ -143,3 +143,77 @@ Pinned to `BradyBrenot/RogueTrader_DLSS@01b1cd816db08f2b1c6c68b1319c6f44dd61bdd6
 - commit `5051ac4ee4c4e399f745d07cf99d04326e24e5c0` (particle screen-parameter fix)
 
 Original architecture baseline also reviewed at `cstamford/RogueTrader_DLSS@f2444b09ecee649e39851715cb5133e7020e159c`.
+
+## 2026-09-23 follow-up — W40KRT_VR public beta
+
+Public upstream reviewed: https://github.com/Beren5556/W40KRT_VR, release `v0.9.79-beta`, published 2026-09-22, source commit `929bc9c1626b92d102def4ab405bf943c83bab24`.
+
+This is a separate VR project from the EnhancedGraphics fork above. The beta targets the 64-bit DirectX 11 Steam build, drives OpenXR directly, exposes per-eye TAA/DLSS/DLAA and includes optional OFXR frame generation. Its architecture is useful to LTR Bridge because it makes several temporal and lifetime contracts explicit in shipping beta source.
+
+### Per-eye temporal identity and fail-open reconstruction
+
+**Observed from pinned source:** `src/native/core/neural/Neural.h` defines each neural job with `generation`, `frame`, `cameraId` and `eye`, plus color, depth, motion, render/output extents, subrect origins, jitter, motion-vector scale, exposure and frame time. Configuration changes advance a nonzero generation and retire the previous feature state.
+
+The same ABI uses a strong fail-open rule: submission copies metadata and AddRefs resources, evaluation happens later on the Unity render thread, the current raw image is already present in the destination, NGX writes into private scratch, and only a validated successful result may replace the destination. Queue-full, stale, resource, runtime, device-lost and evaluation failures are explicit states rather than reasons to corrupt the current frame.
+
+**Relevance:** LTR Bridge should carry equivalent semantic identity internally before its first real reconstruction join: resource/config generation, frame identity, view/eye identity where applicable, camera/view identity, reset/history validity, extents/subrects, jitter and MV conversion metadata. The exact W40KRT ABI is Unity/D3D11-specific and should not be copied as a public ABI.
+
+### Passive temporal probing before integration
+
+**Observed from pinned source:** `WaaaghTemporalProbe.cs` first observes the engine's live TAA graph without GPU readback. It records eye, frame, epoch, camera and camera-buffer ownership, reversed-Z state, jitter matrix and descriptors for source, destination, velocity and depth-copy resources. Samples are bounded and spaced apart, and the observer disables itself on contract mismatch.
+
+**Relevance:** this is a useful validation pattern for legacy adapters: establish resource identity, ownership, lifetime and temporal metadata with a bounded passive probe before retaining resources or inserting a reconstruction pass. It reinforces the current LTR Bridge rule to resolve uncertainties with probes before framework construction.
+
+### Independent eye history
+
+**Observed from pinned source:** `EyeAaHistory.cs` keeps separate pending/seeded state and counters for left and right eyes, validates camera and camera-buffer ownership before seeding history, refuses invalid/self-copy handles, and resets both TAA and neural history together when a discontinuity is requested.
+
+**Relevance:** per-eye history is an ownership constraint, not only an `eye_id` label. Future LTR Bridge stereo work should reject camera/view ownership mismatches and make history reset propagate to every temporal consumer for that view.
+
+### Bridge lifecycle patterns reusable outside Rogue Trader
+
+**Observed from pinned source:** `src/native/core/Bridge.h` snapshots immutable frame data under a monotonically increasing serial, queues GPU work for a render-thread event, provides nonblocking/try-copy diagnostics, and only permits resize between complete frame pairs. Shutdown may report work still pending so the caller can continue pumping retirement rather than freeing resources early.
+
+These are useful generic VR-mod patterns for the other repositories as well: immutable frame snapshots, explicit serial identity, render-thread GPU ownership, nonblocking diagnostics and deferred resource retirement. They do not depend on Rogue Trader's gameplay or tabletop presentation.
+
+### Evidence boundary
+
+**Observed:** the source contracts above and the release's stated DirectX 11/OpenXR/Quest 3 scope.
+
+**Experiment-pending:** applying these semantics to the D3D9/x86 Call of Juarez path, any PSVR2/SteamVR compatibility claim for W40KRT_VR, and any performance/visual-quality conclusion from its beta. The beta release itself states that other headsets, storefronts and mod combinations have not yet been validated.
+
+### Additional pinned files reviewed
+
+Pinned to `Beren5556/W40KRT_VR@929bc9c1626b92d102def4ab405bf943c83bab24` / `v0.9.79-beta`:
+
+- `README.md`
+- `BUILDING.md`
+- `THIRD_PARTY_NOTICES.md`
+- `src/native/core/Bridge.h`
+- `src/native/core/neural/Neural.h`
+- `src/managed/RTMaquetaXR/EyeAaHistory.cs`
+- `src/managed/RTMaquetaXR/WaaaghTemporalProbe.cs`
+
+## 2026-09-30 recheck — W40KRT_VR 0.9.81
+
+The public VR project has moved from the first `v0.9.79-beta` snapshot above to `v0.9.81-beta`, published 2026-09-24 at commit `0fb98a2f991075256dffd2117f9d458360caa324`. The earlier temporal-guide/history findings still apply, but two changes materially sharpen the contract relevant to LTR Bridge.
+
+### Reconstruction configuration is versioned separately from frame identity
+
+**Observed from pinned source:** the native neural ABI advanced from version 1 to version 2. `RTN_Config` now carries an explicit requested model/preset rather than expressing the old forced-K choice through a feature flag. The shipped configuration accepts automatic selection or the J/K/L/M model family, and `RTN_GetPresetStatus` reports the requested preset plus the identified preset for each eye when evidence is available.
+
+**Implication:** reconstruction policy such as DLSS/DLAA model choice belongs in backend configuration state, not in the semantic frame payload. A configuration change should advance generation/reset state so delayed work cannot cross between backend configurations even when color/depth/MV resources are otherwise compatible.
+
+### The OFXR join now validates backend completion, not only frame descriptors
+
+**Observed from pinned source:** the optional OFXR host no longer relies on its previous small compatibility status. It queries the same `RTN_BackendStatus` exported by the shipped neural backend and permits neural-backed synthesis only when the backend is `READY`, reports no failure reason, matches the frame's neural generation, and reports both `lastLeftFrame` and `lastRightFrame` equal to the current game frame.
+
+The OpenXR layer also distinguishes a structurally ineligible host frame from a neural frame that failed this compatibility check instead of collapsing both into one empty-mapping reason.
+
+**Implication:** LTR Bridge should validate producer/consumer joins with explicit stage status in addition to resource metadata. For stereo reconstruction, a downstream presentation/synthesis stage should be able to reject a frame because its temporal descriptors are invalid, because reconstruction is not ready, or because generation/frame/view completion does not match; those failure classes should remain distinguishable in diagnostics.
+
+### Broader runtime evidence, still scoped to that project
+
+**Observed upstream:** `v0.9.81-beta` lists physically validated direct-OpenXR paths for Meta Quest, PICO 4/4 Ultra and Pimax Dream Air/Dream Air SE SLAM, while retaining the rule that unlisted headset/runtime combinations are outside the beta. This is stronger evidence that the project's renderer/reconstruction path can survive more than one OpenXR runtime family, but it is not evidence for PSVR2, SteamVR, legacy x86 transport or LTR Bridge compatibility.
+
+The older `v0.9.79-beta` snapshot remains useful because it records the first public form of the temporal contracts. For current implementation details, use `Beren5556/W40KRT_VR@0fb98a2f991075256dffd2117f9d458360caa324` / `v0.9.81-beta`.

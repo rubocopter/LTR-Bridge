@@ -1,6 +1,6 @@
 # Case study — BioShock VR DLSS/DLAA
 
-Research date: 2026-09-13.
+Research date: 2026-09-13; upstream status rechecked 2026-09-30.
 
 Upstream target:
 
@@ -8,6 +8,8 @@ Upstream target:
 - Release: `v0.2.17-en`, published 2026-09-12.
 - Release source commit: `8671fc87c4646140419ea64bd6e60d59fcac4723`.
 - English release verification states that rendering/runtime behavior is byte-identical to the previously accepted Spanish `v0.2.16` payload; the newly compiled English binaries themselves did not receive a new physical-headset acceptance test.
+
+**2026-09-30 recheck:** `v0.2.17-en` remains the newest published release and still targets `8671fc87c4646140419ea64bd6e60d59fcac4723`. The repository's default branch still ends at the 2026-09-10 `v0.2.16` publication work (`efbafc38e4f5cff28b7b960e1bf28d00c62ee758`). No newer runtime/temporal architecture was observed, so the conclusions below remain pinned to the same implementation evidence.
 
 This project is especially relevant to LTR Bridge because it is a real D3D11 x86 VR integration that separates game-specific temporal-data production from an x64 NVIDIA reconstruction host. It is not evidence that the same techniques work unchanged on D3D8, D3D9, D3D10, another engine, or another GPU backend.
 

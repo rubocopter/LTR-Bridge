@@ -4,6 +4,41 @@ enable_testing()
 add_subdirectory(cmake)
 add_subdirectory(src/optical_flow)
 
+add_executable(ltr_d3d9_real_bridge_protocol_test
+    tests/d3d9_real_bridge_protocol_test.cpp)
+target_compile_features(ltr_d3d9_real_bridge_protocol_test PRIVATE cxx_std_20)
+add_test(NAME ltr_d3d9_real_bridge_protocol_test
+    COMMAND ltr_d3d9_real_bridge_protocol_test)
+
+add_executable(ltr_d3d9_real_bridge_completion_test
+    tests/d3d9_real_bridge_completion_test.cpp)
+target_compile_features(ltr_d3d9_real_bridge_completion_test PRIVATE cxx_std_20)
+add_test(NAME ltr_d3d9_real_bridge_completion_test
+    COMMAND ltr_d3d9_real_bridge_completion_test)
+
+find_program(LTR_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+if(LTR_POWERSHELL_EXECUTABLE)
+    add_test(NAME ltr_d3d9_real_observer_validation_test
+        COMMAND ${LTR_POWERSHELL_EXECUTABLE} -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/d3d9_real_observer_validation_test.ps1)
+endif()
+
+if(WIN32)
+    add_executable(ltr_d3d9_real_bridge_handle_ownership_test
+        tests/d3d9_real_bridge_handle_ownership_test.cpp)
+    target_compile_features(ltr_d3d9_real_bridge_handle_ownership_test PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9_real_bridge_handle_ownership_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME ltr_d3d9_real_bridge_handle_ownership_test
+        COMMAND ltr_d3d9_real_bridge_handle_ownership_test)
+
+    add_executable(ltr_d3d9_real_observer_managed_compat_test
+        tests/d3d9_real_observer_managed_compat_test.cpp)
+    target_compile_features(ltr_d3d9_real_observer_managed_compat_test PRIVATE cxx_std_20)
+    target_compile_definitions(ltr_d3d9_real_observer_managed_compat_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME ltr_d3d9_real_observer_managed_compat_test
+        COMMAND ltr_d3d9_real_observer_managed_compat_test)
+endif()
+
 option(LTR_ENABLE_X86_X64_BRIDGE_PROBE "Build one side of the D3D11 x86 -> D3D12 x64 transport probe" OFF)
 if(LTR_ENABLE_X86_X64_BRIDGE_PROBE)
     if(NOT WIN32)

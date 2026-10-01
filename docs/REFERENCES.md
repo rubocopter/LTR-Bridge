@@ -137,6 +137,15 @@ When a design depends on an upstream implementation detail, replace moving `main
 - Licensing note: no root repository license was detected in the reviewed public snapshots. Treat source as reference-only unless explicit reuse terms are obtained; NVIDIA DLSS/NGX remains separately licensed.
 - Full notes: `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md`.
 
+### W40KRT_VR
+
+- Repository: https://github.com/Beren5556/W40KRT_VR
+- First public beta reviewed: `v0.9.79-beta`, source commit `929bc9c1626b92d102def4ab405bf943c83bab24`, published 2026-09-22.
+- Current reviewed beta: `v0.9.81-beta`, source commit `0fb98a2f991075256dffd2117f9d458360caa324`, published 2026-09-24.
+- Research use: per-eye renderer/native temporal identity, fail-open NGX evaluation, backend/config generations, explicit per-eye backend completion status, passive temporal probing, independent eye history, and a modified OFXR provider with temporal guides plus stale/generation/frame rejection.
+- `v0.9.81-beta` physically validates listed Meta Quest, PICO and Pimax direct-OpenXR paths; do not generalize that evidence to PSVR2, SteamVR or LTR Bridge.
+- Full notes: `docs/CASE_STUDY_ROGUE_TRADER_DLSS.md` and `docs/CASE_STUDY_OFXR_BRIDGE.md`.
+
 ### OFXR Bridge
 
 - Repository: https://github.com/tig3rmast3r/OFXR-Bridge

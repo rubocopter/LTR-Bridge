@@ -19,6 +19,7 @@ struct ClientOptions {
   std::uint32_t initial_stall_ms = 0;
   std::uint32_t bootstrap_timeout_ms = 5000;
   bool validate_synthetic_pattern = false;
+  std::wstring fault_injection;
 };
 
 enum class SubmitStatus {
@@ -57,6 +58,7 @@ public:
   [[nodiscard]] SubmitStatus QuerySubmitStatus();
   [[nodiscard]] SubmitStatus TrySubmit(ID3D11Texture2D *source);
   [[nodiscard]] bool Poll();
+  void Cancel();
   void Shutdown(bool terminate_child);
   [[nodiscard]] ClientSnapshot Snapshot() const;
 

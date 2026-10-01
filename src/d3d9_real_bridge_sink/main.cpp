@@ -17,6 +17,21 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
+struct ScopedHandle {
+  HANDLE value = nullptr;
+
+  ScopedHandle() = default;
+  explicit ScopedHandle(HANDLE handle) : value(handle) {}
+  ScopedHandle(const ScopedHandle &) = delete;
+  ScopedHandle &operator=(const ScopedHandle &) = delete;
+  ~ScopedHandle() {
+    if (value)
+      CloseHandle(value);
+  }
+
+  [[nodiscard]] HANDLE get() const noexcept { return value; }
+};
+
 struct Options {
   HANDLE shared_handle = nullptr;
   HANDLE bootstrap_write = nullptr;
@@ -31,6 +46,7 @@ struct Options {
   std::uint64_t adapter_luid = 0;
   bool have_adapter_luid = false;
   bool validate_synthetic_pattern = false;
+  std::wstring fault_injection;
   std::array<std::uint32_t, 5> expected{};
   bool have_expected = false;
   std::wstring log_path;
@@ -116,6 +132,12 @@ struct Options {
     } else if (key == L"--initial-stall-ms") {
       if (!parse_u32(value, out.initial_stall_ms))
         return false;
+    } else if (key == L"--fault-injection") {
+      if (value != L"resource0-open" && value != L"done-fence-open" &&
+          value != L"device-removal" && value != L"consumer-copy" &&
+          value != L"final-completion")
+        return false;
+      out.fault_injection = value;
     } else if (key == L"--log") {
       out.log_path = value;
     } else if (key.size() == 11 && key.starts_with(L"--expected")) {
@@ -150,7 +172,7 @@ void log_line(const std::wstring &path, const std::string &line) {
 }
 
 [[nodiscard]] bool wait_for_fence(ID3D12Fence *fence, std::uint64_t value) {
-  if (fence->GetCompletedValue() >= value)
+  if (ltr::d3d9_real_bridge::fence_reached(fence->GetCompletedValue(), value))
     return true;
   HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   if (!event)
@@ -158,7 +180,38 @@ void log_line(const std::wstring &path, const std::string &line) {
   const HRESULT hr = fence->SetEventOnCompletion(value, event);
   const DWORD wait = SUCCEEDED(hr) ? WaitForSingleObject(event, 10000) : WAIT_FAILED;
   CloseHandle(event);
-  return SUCCEEDED(hr) && wait == WAIT_OBJECT_0;
+  return SUCCEEDED(hr) && wait == WAIT_OBJECT_0 &&
+         ltr::d3d9_real_bridge::fence_reached(fence->GetCompletedValue(), value);
+}
+
+enum class ProducerWaitResult { ready, parent_exited, failed };
+
+[[nodiscard]] ProducerWaitResult
+wait_for_producer_ready(ID3D12Fence *fence, std::uint64_t value,
+                        HANDLE parent) {
+  if (WaitForSingleObject(parent, 0) == WAIT_OBJECT_0)
+    return ProducerWaitResult::parent_exited;
+  if (ltr::d3d9_real_bridge::fence_reached(fence->GetCompletedValue(), value))
+    return ProducerWaitResult::ready;
+  ScopedHandle event(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+  if (!event.get())
+    return ProducerWaitResult::failed;
+  if (FAILED(fence->SetEventOnCompletion(value, event.get())))
+    return WaitForSingleObject(parent, 0) == WAIT_OBJECT_0
+               ? ProducerWaitResult::parent_exited
+               : ProducerWaitResult::failed;
+  const HANDLE waits[] = {event.get(), parent};
+  const DWORD wait = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+  if (wait == WAIT_OBJECT_0) {
+    if (ltr::d3d9_real_bridge::fence_reached(fence->GetCompletedValue(), value))
+      return ProducerWaitResult::ready;
+    return WaitForSingleObject(parent, 0) == WAIT_OBJECT_0
+               ? ProducerWaitResult::parent_exited
+               : ProducerWaitResult::failed;
+  }
+  if (wait == WAIT_OBJECT_0 + 1)
+    return ProducerWaitResult::parent_exited;
+  return ProducerWaitResult::failed;
 }
 
 [[nodiscard]] bool validate_contract(ID3D12Resource *resource,
@@ -250,9 +303,9 @@ void log_line(const std::wstring &path, const std::string &line) {
     return 21;
   }
 
-  HANDLE parent = OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE,
-                              options.parent_pid);
-  if (!parent) {
+  ScopedHandle parent(OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE, FALSE,
+                                  options.parent_pid));
+  if (!parent.get()) {
     log_line(options.log_path,
              "event=x64_real_bridge_multiframe stage=open_parent RESULT FAIL");
     for (HANDLE handle : local_handles)
@@ -261,11 +314,26 @@ void log_line(const std::wstring &path, const std::string &line) {
     return 22;
   }
 
+  std::vector<HANDLE> parent_handles;
+  const auto rollback_parent_handles = [&]() {
+    for (HANDLE remote : parent_handles) {
+      HANDLE local = nullptr;
+      if (DuplicateHandle(parent.get(), remote, GetCurrentProcess(), &local, 0,
+                          FALSE,
+                          DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS) &&
+          local) {
+        CloseHandle(local);
+      }
+    }
+    parent_handles.clear();
+  };
+
   const auto duplicate_to_parent = [&](HANDLE source, std::uint64_t &target) {
     HANDLE remote = nullptr;
-    if (!DuplicateHandle(GetCurrentProcess(), source, parent, &remote, 0, FALSE,
+    if (!DuplicateHandle(GetCurrentProcess(), source, parent.get(), &remote, 0, FALSE,
                          DUPLICATE_SAME_ACCESS))
       return false;
+    parent_handles.push_back(remote);
     target = static_cast<std::uint64_t>(
         reinterpret_cast<std::uintptr_t>(remote));
     return true;
@@ -279,15 +347,34 @@ void log_line(const std::wstring &path, const std::string &line) {
   bootstrap.frames = options.frames;
   bootstrap.ring_depth = ltr::d3d9_real_bridge::kRingDepth;
   bootstrap.adapter_luid = device_luid;
+  ScopedHandle injected_handle;
+  if (options.fault_injection == L"resource0-open" ||
+      options.fault_injection == L"done-fence-open") {
+    injected_handle.value = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!injected_handle.get()) {
+      for (HANDLE handle : local_handles)
+        CloseHandle(handle);
+      CloseHandle(local_done_handle);
+      log_line(options.log_path,
+               "event=x64_real_bridge_multiframe stage=fault_setup RESULT FAIL");
+      return 36;
+    }
+  }
+  const HANDLE resource0_source = options.fault_injection == L"resource0-open"
+                                      ? injected_handle.get()
+                                      : local_handles[0];
+  const HANDLE done_fence_source = options.fault_injection == L"done-fence-open"
+                                       ? injected_handle.get()
+                                       : local_done_handle;
   const bool duplicated =
-      duplicate_to_parent(local_handles[0], bootstrap.resource0_handle) &&
+      duplicate_to_parent(resource0_source, bootstrap.resource0_handle) &&
       duplicate_to_parent(local_handles[1], bootstrap.resource1_handle) &&
-      duplicate_to_parent(local_done_handle, bootstrap.done_fence_handle);
+      duplicate_to_parent(done_fence_source, bootstrap.done_fence_handle);
   for (HANDLE handle : local_handles)
     CloseHandle(handle);
   CloseHandle(local_done_handle);
-  CloseHandle(parent);
   if (!duplicated) {
+    rollback_parent_handles();
     log_line(options.log_path,
              "event=x64_real_bridge_multiframe stage=duplicate_handles RESULT FAIL");
     return 23;
@@ -299,10 +386,12 @@ void log_line(const std::wstring &path, const std::string &line) {
                 nullptr);
   CloseHandle(options.bootstrap_write);
   if (!bootstrap_written || written != sizeof(bootstrap)) {
+    rollback_parent_handles();
     log_line(options.log_path,
              "event=x64_real_bridge_multiframe stage=bootstrap_write RESULT FAIL");
     return 24;
   }
+  parent_handles.clear();
 
   HANDLE ready_handle = nullptr;
   HRESULT open_ready = E_FAIL;
@@ -334,6 +423,29 @@ void log_line(const std::wstring &path, const std::string &line) {
     return 26;
   }
 
+  if (options.fault_injection == L"device-removal") {
+    ComPtr<ID3D12Device5> device5;
+    const HRESULT query_device5 = device->QueryInterface(IID_PPV_ARGS(&device5));
+    if (FAILED(query_device5) || !device5) {
+      log_line(options.log_path,
+               "event=x64_real_bridge_multiframe stage=fault_setup RESULT FAIL");
+      return 36;
+    }
+    device5->RemoveDevice();
+    const HRESULT removed = device->GetDeviceRemovedReason();
+    const std::uint64_t ready_completed = ready_fence->GetCompletedValue();
+    log_line(options.log_path,
+             "event=x64_real_bridge_multiframe stage=device_removed removed_hr=" +
+                 std::to_string(static_cast<long long>(removed)) +
+                 " ready_completed=" + std::to_string(ready_completed) +
+                 " sentinel_rejected=" +
+                 std::to_string(ltr::d3d9_real_bridge::fence_reached(
+                                    ready_completed, 1)
+                                    ? 0
+                                    : 1) +
+                 " RESULT FAIL");
+  }
+
   log_line(options.log_path,
            "event=x64_real_bridge_multiframe stage=initialized protocol=" +
                std::to_string(ltr::d3d9_real_bridge::kProtocolVersion) +
@@ -362,18 +474,33 @@ void log_line(const std::wstring &path, const std::string &line) {
     const std::uint64_t ready = ltr::d3d9_real_bridge::ready_value(frame);
     const std::uint64_t done = ltr::d3d9_real_bridge::done_value(frame);
     log_line(options.log_path,
+             "event=x64_real_bridge_multiframe stage=await_ready frame=" +
+                 std::to_string(frame) + " slot=" + std::to_string(slot) +
+                 " ready_target=" + std::to_string(ready) +
+                 " ready_completed=" +
+                 std::to_string(ready_fence->GetCompletedValue()) +
+                 " done_before=" + std::to_string(done_fence->GetCompletedValue()));
+    const ProducerWaitResult ready_wait =
+        wait_for_producer_ready(ready_fence.Get(), ready, parent.get());
+    if (ready_wait != ProducerWaitResult::ready) {
+      log_line(options.log_path,
+               "event=x64_real_bridge_multiframe stage=producer_ready frame=" +
+                   std::to_string(frame) + " ready_target=" +
+                   std::to_string(ready) + " ready_completed=" +
+                   std::to_string(ready_fence->GetCompletedValue()) + " reason=" +
+                   (ready_wait == ProducerWaitResult::parent_exited
+                        ? "parent_exited"
+                        : "wait_failed") +
+                   " RESULT FAIL");
+      return 27;
+    }
+    log_line(options.log_path,
              "event=x64_real_bridge_multiframe stage=queue frame=" +
                  std::to_string(frame) + " slot=" + std::to_string(slot) +
                  " ready_target=" + std::to_string(ready) +
                  " ready_completed=" +
                  std::to_string(ready_fence->GetCompletedValue()) +
                  " done_before=" + std::to_string(done_fence->GetCompletedValue()));
-    if (FAILED(queue->Wait(ready_fence.Get(), ready))) {
-      log_line(options.log_path,
-               "event=x64_real_bridge_multiframe stage=queue_sync frame=" +
-                   std::to_string(frame) + " RESULT FAIL");
-      return 27;
-    }
     if (FAILED(device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators[frame]))) ||
         FAILED(device->CreateCommandList(
@@ -446,7 +573,11 @@ void log_line(const std::wstring &path, const std::string &line) {
     }
     ID3D12CommandList *execute[] = {lists[frame].Get()};
     queue->ExecuteCommandLists(1, execute);
-    if (FAILED(queue->Signal(done_fence.Get(), done))) {
+    const HRESULT signal_done =
+        options.fault_injection == L"consumer-copy" && frame == 0
+            ? DXGI_ERROR_DEVICE_REMOVED
+            : queue->Signal(done_fence.Get(), done);
+    if (FAILED(signal_done)) {
       log_line(options.log_path,
                "event=x64_real_bridge_multiframe stage=signal_done frame=" +
                    std::to_string(frame) + " RESULT FAIL");
@@ -456,7 +587,11 @@ void log_line(const std::wstring &path, const std::string &line) {
 
   const std::uint64_t final_done =
       ltr::d3d9_real_bridge::done_value(options.frames - 1U);
-  if (!wait_for_fence(done_fence.Get(), final_done)) {
+  const bool completion_reached =
+      options.fault_injection == L"final-completion"
+          ? false
+          : wait_for_fence(done_fence.Get(), final_done);
+  if (!completion_reached) {
     log_line(options.log_path,
              "event=x64_real_bridge_multiframe stage=completion final_done=" +
                  std::to_string(done_fence->GetCompletedValue()) +

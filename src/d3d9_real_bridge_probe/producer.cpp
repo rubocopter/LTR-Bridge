@@ -25,6 +25,10 @@ struct Options {
   std::uint32_t height = 64;
   std::uint32_t frames = ltr::d3d9_real_bridge::kDefaultFrames;
   std::uint32_t initial_stall_ms = 50;
+  std::uint32_t submission_timeout_ms = 10000;
+  std::uint32_t interframe_pause_after = 0;
+  std::uint32_t interframe_pause_ms = 0;
+  std::wstring fault_injection;
 };
 
 [[nodiscard]] bool parse_u32(const std::wstring &text, std::uint32_t &out,
@@ -61,12 +65,33 @@ struct Options {
     } else if (key == L"--initial-stall-ms") {
       if (!parse_u32(value, out.initial_stall_ms, true))
         return false;
+    } else if (key == L"--submission-timeout-ms") {
+      if (!parse_u32(value, out.submission_timeout_ms))
+        return false;
+    } else if (key == L"--interframe-pause-after") {
+      if (!parse_u32(value, out.interframe_pause_after))
+        return false;
+    } else if (key == L"--interframe-pause-ms") {
+      if (!parse_u32(value, out.interframe_pause_ms))
+        return false;
+    } else if (key == L"--fault-injection") {
+      if (value != L"resource0-open" && value != L"done-fence-open" &&
+          value != L"device-removal" && value != L"consumer-copy" &&
+          value != L"final-completion")
+        return false;
+      out.fault_injection = value;
     } else {
       return false;
     }
   }
+  const bool pause_disabled =
+      out.interframe_pause_after == 0 && out.interframe_pause_ms == 0;
+  const bool pause_valid = out.interframe_pause_after > 0 &&
+                           out.interframe_pause_after < out.frames &&
+                           out.interframe_pause_ms > 0;
   return !out.sink_path.empty() &&
-         out.frames >= ltr::d3d9_real_bridge::kRingDepth;
+         out.frames >= ltr::d3d9_real_bridge::kRingDepth &&
+         (pause_disabled || pause_valid);
 }
 
 [[nodiscard]] std::wstring make_log_path() {
@@ -87,7 +112,9 @@ int wmain(int argc, wchar_t **argv) {
   Options options{};
   if (!parse(argc, argv, options)) {
     std::cerr << "usage: --sink <x64-exe> [--width N --height N --frames N "
-                 "--initial-stall-ms N]\n";
+                 "--initial-stall-ms N --submission-timeout-ms N "
+                 "--interframe-pause-after N --interframe-pause-ms N "
+                 "--fault-injection resource0-open|done-fence-open|device-removal|consumer-copy|final-completion]\n";
     return 2;
   }
 
@@ -129,6 +156,7 @@ int wmain(int argc, wchar_t **argv) {
   client_options.frames = options.frames;
   client_options.initial_stall_ms = options.initial_stall_ms;
   client_options.validate_synthetic_pattern = true;
+  client_options.fault_injection = options.fault_injection;
 
   ltr::d3d9_real_bridge::Client client;
   if (!client.Start(device.Get(), context.Get(), client_options,
@@ -140,9 +168,18 @@ int wmain(int argc, wchar_t **argv) {
   std::vector<std::uint32_t> pixels(
       static_cast<std::size_t>(options.width) * options.height);
   std::uint32_t next_frame = 0;
+  ULONGLONG last_submission_progress = GetTickCount64();
   while (next_frame < options.frames) {
     const auto availability = client.QuerySubmitStatus();
     if (availability == ltr::d3d9_real_bridge::SubmitStatus::backpressure) {
+      if (GetTickCount64() - last_submission_progress >=
+          options.submission_timeout_ms) {
+        client.Cancel();
+        std::cerr << "stage=submission_timeout frame=" << next_frame
+                  << " timeout_ms=" << options.submission_timeout_ms
+                  << "\nRESULT FAIL\n";
+        return 8;
+      }
       Sleep(1);
       continue;
     }
@@ -161,6 +198,10 @@ int wmain(int argc, wchar_t **argv) {
     const auto status = client.TrySubmit(local_sources[slot].Get());
     if (status == ltr::d3d9_real_bridge::SubmitStatus::submitted) {
       ++next_frame;
+      last_submission_progress = GetTickCount64();
+      if (options.interframe_pause_after != 0 &&
+          next_frame == options.interframe_pause_after)
+        Sleep(options.interframe_pause_ms);
       continue;
     }
     std::cerr << "stage=submit frame=" << next_frame << "\nRESULT FAIL\n";
@@ -171,8 +212,8 @@ int wmain(int argc, wchar_t **argv) {
   while (!client.Poll() && GetTickCount64() < deadline)
     Sleep(1);
   const auto snapshot = client.Snapshot();
-  const bool pressure_ok =
-      options.initial_stall_ms == 0 || snapshot.backpressure_checks > 0;
+  const bool pressure_ok = ltr::d3d9_real_bridge::pressure_requirement_satisfied(
+      options.frames, options.initial_stall_ms, snapshot.backpressure_checks);
   const bool passed = snapshot.finished && snapshot.passed && pressure_ok;
   std::cout << "event=producer_complete frames=" << snapshot.submitted
             << " final_done=" << snapshot.done_completed

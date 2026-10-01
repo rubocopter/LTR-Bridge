@@ -1,5 +1,7 @@
 #include "client.h"
 
+#include "completion.h"
+#include "owned_handles.h"
 #include "protocol.h"
 
 #include <Windows.h>
@@ -115,6 +117,7 @@ struct Client::Impl {
   bool active = false;
   bool finished = false;
   bool passed = false;
+  bool cancellation_requested = false;
 
   void Log(const std::string &line) const {
     if (logger)
@@ -146,8 +149,12 @@ struct Client::Impl {
     DeleteFileW(options.log_path.c_str());
     finished = true;
     active = false;
-    passed = child_exit == 0 && submitted == options.frames &&
-             done_fence && done_fence->GetCompletedValue() >= options.frames;
+    const bool done_reached =
+        done_fence && fence_reached(done_fence->GetCompletedValue(), options.frames);
+    const CompletionResult completion = classify_completion(
+        cancellation_requested, child_exit, submitted, options.frames,
+        done_reached);
+    passed = completion == CompletionResult::pass;
     std::ostringstream out;
     out << "event=real_multiframe_client generation=" << options.generation
         << " frames_submitted=" << submitted
@@ -157,8 +164,13 @@ struct Client::Impl {
         << (ready_fence ? ready_fence->GetCompletedValue() : 0)
         << " done_completed="
         << (done_fence ? done_fence->GetCompletedValue() : 0)
-        << " child_exit=" << child_exit << " RESULT "
-        << (passed ? "PASS" : "FAIL");
+        << " child_exit=" << child_exit << " RESULT ";
+    if (completion == CompletionResult::pass)
+      out << "PASS";
+    else if (completion == CompletionResult::cancelled)
+      out << "CANCELLED";
+    else
+      out << "FAIL";
     Log(out.str());
     return true;
   }
@@ -249,6 +261,8 @@ bool Client::Start(ID3D11Device *device, ID3D11DeviceContext *context,
           << L" --validate-synthetic-pattern "
           << (options.validate_synthetic_pattern ? 1 : 0) << L" --log "
           << quote(options.log_path);
+  if (!options.fault_injection.empty())
+    command << L" --fault-injection " << quote(options.fault_injection);
   std::wstring command_line = command.str();
   SIZE_T attribute_bytes = 0;
   InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
@@ -300,6 +314,7 @@ bool Client::Start(ID3D11Device *device, ID3D11DeviceContext *context,
     return false;
   }
   close_handle(bootstrap_read);
+  OwnedBootstrapHandles bootstrap_handles(bootstrap);
   if (bootstrap.magic != kBootstrapMagic ||
       bootstrap.protocol != kProtocolVersion ||
       bootstrap.width != options.width || bootstrap.height != options.height ||
@@ -312,15 +327,9 @@ bool Client::Start(ID3D11Device *device, ID3D11DeviceContext *context,
     return false;
   }
 
-  std::array<HANDLE, kRingDepth> resource_handles = {
-      reinterpret_cast<HANDLE>(
-          static_cast<std::uintptr_t>(bootstrap.resource0_handle)),
-      reinterpret_cast<HANDLE>(
-          static_cast<std::uintptr_t>(bootstrap.resource1_handle))};
   for (std::uint32_t slot = 0; slot < kRingDepth; ++slot) {
     const HRESULT open = state.device1->OpenSharedResource1(
-        resource_handles[slot], IID_PPV_ARGS(&state.transport[slot]));
-    close_handle(resource_handles[slot]);
+        bootstrap_handles.resource(slot), IID_PPV_ARGS(&state.transport[slot]));
     if (FAILED(open) || !resource_contract(state.transport[slot].Get(),
                                            options.width, options.height)) {
       std::ostringstream out;
@@ -333,12 +342,9 @@ bool Client::Start(ID3D11Device *device, ID3D11DeviceContext *context,
     }
   }
 
-  HANDLE done_handle = reinterpret_cast<HANDLE>(
-      static_cast<std::uintptr_t>(bootstrap.done_fence_handle));
   const HRESULT open_done = state.device5->OpenSharedFence(
-      done_handle, __uuidof(ID3D11Fence),
+      bootstrap_handles.done_fence(), __uuidof(ID3D11Fence),
       reinterpret_cast<void **>(state.done_fence.GetAddressOf()));
-  close_handle(done_handle);
   if (FAILED(open_done) || !state.done_fence) {
     state.Log("event=real_multiframe_client stage=open_done_fence RESULT FAIL");
     Shutdown(true);
@@ -368,7 +374,8 @@ SubmitStatus Client::QuerySubmitStatus() {
   if (state.submitted >= state.options.frames)
     return SubmitStatus::waiting_for_completion;
   const std::uint64_t reuse_target = reuse_done_value(state.submitted);
-  if (reuse_target && state.done_fence->GetCompletedValue() < reuse_target) {
+  if (reuse_target &&
+      !fence_reached(state.done_fence->GetCompletedValue(), reuse_target)) {
     ++state.backpressure_checks;
     return SubmitStatus::backpressure;
   }
@@ -422,6 +429,13 @@ bool Client::Poll() {
   return state.FinishIfExited();
 }
 
+void Client::Cancel() {
+  if (!impl_)
+    return;
+  impl_->cancellation_requested = true;
+  Shutdown(true);
+}
+
 void Client::Shutdown(bool terminate_child) {
   if (!impl_)
     return;
@@ -429,7 +443,7 @@ void Client::Shutdown(bool terminate_child) {
   if (state.process) {
     if (!state.FinishIfExited() && terminate_child &&
         WaitForSingleObject(state.process, 0) == WAIT_TIMEOUT) {
-      TerminateProcess(state.process, 90);
+      TerminateProcess(state.process, kCancelledChildExitCode);
       WaitForSingleObject(state.process, 1000);
       (void)state.FinishIfExited();
     }

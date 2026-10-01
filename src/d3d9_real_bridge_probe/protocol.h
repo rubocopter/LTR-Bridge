@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace ltr::d3d9_real_bridge {
 
@@ -41,6 +42,19 @@ static_assert(sizeof(BootstrapMessage) == 56);
   return submitted_frames < kRingDepth
              ? 0ULL
              : done_value(submitted_frames - kRingDepth);
+}
+
+[[nodiscard]] inline constexpr bool pressure_requirement_satisfied(
+    std::uint32_t frames, std::uint32_t initial_stall_ms,
+    std::uint32_t backpressure_checks) noexcept {
+  return initial_stall_ms == 0 || frames <= kRingDepth ||
+         backpressure_checks > 0;
+}
+
+[[nodiscard]] inline constexpr bool fence_reached(
+    std::uint64_t completed, std::uint64_t target) noexcept {
+  return completed != std::numeric_limits<std::uint64_t>::max() &&
+         completed >= target;
 }
 
 [[nodiscard]] inline constexpr std::uint32_t synthetic_pixel(
