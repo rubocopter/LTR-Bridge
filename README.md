@@ -45,6 +45,9 @@ LTR Bridge is independent of [Call of Juarez VR](https://github.com/rubocopter/c
 The mod's accepted OpenVR stereo, normal shutdown and configured-HMD rate cap
 are separate evidence; they do not validate LTR's D3D12 reconstruction or OpenXR
 path. This project does not add dependencies to existing mod repositories.
+The mod's controller-only menus and body comfort remain unresolved product
+gates; its native mouse-event and body-yaw corrections are host-tested pending
+another headset run. They do not advance LTR's temporal-input gate.
 
 ## Start with the docs
 

@@ -2,7 +2,65 @@
 
 Updated: 2026-10-01.
 
-## Latest checkpoint — held pointer rejected; automatic internal-cursor correction
+## Latest checkpoint — native menu mouse events and continuous body yaw
+
+**Verified / observed:** CoJ run `20261001T133145Z-5a8de35f18bf` from source
+`b0aa3112a7f9799b6fa086f2487c69b69a39e24b` finished and restored staging.
+The operator rejected automatic pointer operation: no option hover/selection,
+retained bullet target after a button press, and mouse needed for menus. Clip:
+`C:/Users/onita/Videos/clip_1.790.862.253.195.mp4`. Fresh retained-package audit
+passes 98 identity/hash/size checks. Manifest
+`6D936892119EBDC2DDFCE781A17F69C0A2DF95BE05EC2819B683AC3F3EC43EE0`,
+package SHA-256 `B17E4F02BD4D214E6CFA144BCD01EEBE197F53AEC6966D95EFDFA31B42E30C24`.
+Package/extract/verifier/clip frames and exact-binary probes are retained in CoJ
+ignored `work/transport-diagnosis/20261001T133145Z-5a8de35f18bf/`.
+Earlier active-candidate descriptions below are historical and superseded.
+
+**Visual-validated / observed:** operator again confirms depth, head turns,
+controller turn, movement/walk/jump and recenter. Native revolver hand/body steps
+on physical yaw despite Body IK disabled. Configured HMD refresh/producer target
+remain 90/90 Hz; normal same-owner shutdown and zero pending consumer copies are
+recorded. These observations do not accept tracked Body IK or weapon alignment.
+
+**Verified:** sprite `UICursor.GetPos` echo does not establish native hover.
+`OnMouseMove` moves the sprite, `SetProcessMouse` only enables a flag. Actual UI
+`GetMousePos` reads X/Z from `Sprite+0x180` input context, or owning module+0xF4,
+with native X/Y at context+0x38/+0x3C. Shipped recursive dispatcher RVA `0xC8F00`
+emits enter/move/leave through native controls after bounds/capture tests. A
+local x86 probe maps the exact DLL without initialization and executes this
+actual code on synthetic sprites: coordinate-only writes cause zero events;
+recursive dispatch produces child enter/move/leave and honors disabled roots.
+Exact contracts/hash scope live in CoJ `docs/research/COJ_UI_MOUSE_PATH.md`.
+
+**Implemented / host-tested:** separately authorized CoJ fix dispatches native
+mouse events before visual cursor SetPos and gates delivery against actual UI
+input readback. Pointer lookup uses non-creating FindUI(index); passive cursor
+observation reads existing m_cCursor instead of invoking factories. Failed
+initial observation, delivery or readback cancels its pending click and frees
+the retained target. Review found the lazy-loading lookup and early-failure
+stale click; both were reproduced as failing regressions and corrected. The
+automatic ray, same-hand trigger and temporary mouse priority remain.
+
+**Verified / implemented / host-tested:** 35-degree engage / 20-degree residual
+body-yaw policy produces at least 15-degree actor jumps even with Body IK off;
+frozen log contains corresponding 15–16-degree deltas. Continuous following
+retains the 35-degree free-look cone and absorbs only excess yaw. Regression
+reproduced 15.5 degrees of actor movement for 0.5 degrees of head movement;
+corrected policy bounds gradual actor increments by the actual head increment,
+including reversal/wrapping/recenter and previous-owned-yaw compensation.
+
+**Experiment-pending:** replacement remains physically unaccepted. Next run
+combines main/pause hover and short L2/R2 selection, Cross/Circle, physical mouse
+coexistence, slow physical yaw while watching the native revolver hand with IK
+off, depth/head turns, move/walk/jump, Create recenter, dashboard return and normal
+quit/finish. Transport PASS cannot accept menu/body visual gates. No game or
+SteamVR auto launch. LTR source remains independent; there is no new real-game
+temporal input, reconstruction return path or LTR headset validation.
+Publication, final fresh checks and immutable staging identity will be recorded
+below after this replacement is finalized. Existing LTR probe.obj and
+d3d9ex-managed-pool-probe.obj remain untouched.
+
+## Historical checkpoint — held pointer rejected; automatic internal-cursor correction
 
 **Verified / observed:** CoJ run `20261001T004616Z-6768e557f531` completed
 startup/normal closure and restored staging, but the operator rejected menu
@@ -81,7 +139,7 @@ The new candidate's immutable source/build/run identity will be recorded here
 after preparation. CoJ README/architecture/validation/roadmap now record the real
 rejection and distinguish implemented/host-tested correction from physical acceptance.
 
-## Active candidate — automatic pointer plus gameplay regression
+## Historical candidate — sprite-only automatic pointer, now finished/rejected
 
 **Host-tested / verified staging:** normal CoJ `prepare` from clean published
 source `b0aa3112a7f9799b6fa086f2487c69b69a39e24b` rebuilt Release and passed
