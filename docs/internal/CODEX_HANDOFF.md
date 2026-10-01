@@ -2,7 +2,114 @@
 
 Updated: 2026-10-01.
 
-## Documentation checkpoint — current project landings
+## Latest checkpoint — held pointer rejected; automatic internal-cursor correction
+
+**Verified / observed:** CoJ run `20261001T004616Z-6768e557f531` completed
+startup/normal closure and restored staging, but the operator rejected menu
+usability: holding R1 activated the ray while the game cursor still jumped.
+The clip `C:/Users/onita/Videos/clip_1.790.857.394.234.mp4` shows the yellow
+cursor moving independently of the relatively stable cyan ray endpoint.
+Fresh package verification passes 98 identity/hash/size checks for source
+`b67c051287e4259aa074ceaa57b1f34eb5df6b47`, manifest
+`1B0E8C418BD14C676BFCF61039F7DDFA42B52FD1300C5C9DEB83B4AC22A8516F`,
+ZIP SHA-256 `35F11CAB3CB3D695D2DC2FCB4E3D605742EA7548D17977F179E2E0E15AC75EC6`.
+The retained package, extract, verifier and clip contact sheet are in CoJ ignored
+`work/transport-diagnosis/20261001T004616Z-6768e557f531/`.
+Read-only status before preparing a replacement: game not running, staging none.
+Earlier active-candidate descriptions below are historical and superseded.
+
+**Verified / hypothesis:** static inspection of the exact shipped Java cursor
+and ChromeEngine3 shows `UICursor.SetPos` calls an internal logical cursor setter
+and sprite position; JNI `GameObject.SetCursorPos` RVA `0xB21D0` does not move the
+Windows cursor. ChromeEngine3 SHA-256 remains
+`DB69BC35919FE57187766771A2452ACA11090474F6D63DF1A85A80EDED131EC8`.
+The rejected route performs Windows warp, absolute SendInput and WM_MOUSEMOVE
+for every ray update. Relative mouse-stream feedback explains the discrepancy,
+but remains a hypothesis until the isolated replacement is physically exercised.
+
+**Implemented / host-tested:** separately authorized CoJ correction removes
+all desktop movement injection, queues source-pixel targets on the presenter
+and delivers only on the game thread via `MainMenuModule.GetGlobalCursor` ->
+`UICursor.SetPos` + `OnMouseMove`. `UICursor.GetPos` observes the logical cursor
+before/after delivery; matching readback gates selection. A trigger retains its
+target until the next game Present has observed it applied, allowing hover
+processing before selection. Accepted short taps survive ordinary trigger release.
+Back/Cross navigation, focus/owner loss and a change in shipped static
+`MainMenuModule.m_nCurUI` cancel the prior queue/hover. The static int field
+is confirmed in shipped `code.pak`, SHA-256
+`F9DB47C166E03F23E37CBCDFD5344E4AD4C5C9134F35E8F6DCDF66DB7E71CE12`.
+Same-index modal-dialog lifecycle is not independently validated. Cursor/index validation
+and native selection are serialized with mailbox cancellation; hand/claim/click
+identity protects completion.
+The laser is automatic with no R1/L1 requirement, as the operator requested;
+right tracked hand is preferred, a fresh other-hand trigger chooses that ray,
+and same-hand L2/R2 selects. Physical logical-cursor movement/held mouse button
+has priority for 1.5 seconds after the latest activity; observation continues
+while the ray is hidden. Cross/Circle and gameplay weapon-transition guards remain.
+
+**Host-tested:** fresh CoJ Release build and CTest pass 36 tests, 1 classic
+sharing skip, 0 failures. New regressions execute the actual production delivery
+callback without desktop/game input and the production JNI adapter with fake JNI
+function tables. RED/GREEN checks reproduce 200 desktop injections for 200 fixed
+ray updates, missing mouse priority and premature click delivery, then verify
+removal/priority/hover behavior. JNI fixtures cover global/active menu lookup,
+null current UI, reference cleanup, exceptions, missing APIs and nonfinite reads.
+The full-UI verifier now requires sole internal-cursor delivery with matching
+readback, rejecting simultaneous Windows ownership. Targeted regressions also
+cover brief taps, menu-index changes at unchanged coordinates, stale dispatch
+after navigation, and missing JNI static-int observation. Review findings on
+lost taps and clicks crossing menus were reproduced and addressed. These checks do not prove physical
+hover, correct menu-option selection or mouse coexistence.
+
+**Observed reference:** read-only Penumbra checkout
+`E:/penumbra_vr`, commit `6100ede24e95716ef2e170e6887a6e550651ca2b`, gives
+physical mouse motion temporary priority at the native cursor consumer. CoJ
+implements its own exact-game route; no GPL source is copied and no dependency
+is introduced. LTR source remains independent, with no new reconstruction,
+temporal-input, transport-reset or headset validation from this CoJ correction.
+
+**Experiment-pending:** the operator requested a broader next run. Prepare
+the normal transport profile with stereo/tracking enabled and Body IK disabled.
+In one manual run check automatic menu hover, R2/L2 selection, Cross/Circle and
+mouse/drag priority; load a save, judge stereo depth/head turns at configured
+HMD cadence, move/walk/jump and recenter; open/close the dashboard, revisit the
+pause UI and quit normally, then `finish`. The transport verifier establishes
+transport/shutdown only; menu, recenter and resumed usability need operator
+confirmation even if its verifier passes. No game/SteamVR is launched automatically. CoJ code/tests/durable docs are published to `origin/main` as
+`b0aa3112a7f9799b6fa086f2487c69b69a39e24b`; the working tree is clean.
+The new candidate's immutable source/build/run identity will be recorded here
+after preparation. CoJ README/architecture/validation/roadmap now record the real
+rejection and distinguish implemented/host-tested correction from physical acceptance.
+
+## Active candidate — automatic pointer plus gameplay regression
+
+**Host-tested / verified staging:** normal CoJ `prepare` from clean published
+source `b0aa3112a7f9799b6fa086f2487c69b69a39e24b` rebuilt Release and passed
+36 tests, 1 classic-sharing skip, 0 failures. Run `20261001T133145Z-5a8de35f18bf`,
+manifest `6D936892119EBDC2DDFCE781A17F69C0A2DF95BE05EC2819B683AC3F3EC43EE0`,
+manifest-file SHA-256
+`D99CCC8BE3F2F1546BEBC02B6B97DD18D7CB34FC23B6E6D63F6FE97B6C268024`,
+proxy `12166C06C4E64024E6A63E1AA418A9FDF8B470338669160809406E97CD5450A1`.
+Thirteen fresh candidate checks verify source/run/stage identity, archived manifest,
+all four deployed hashes, x86 proxy and intended control state. Read-only status:
+game not running, native-stereo transport profile staged, tracking/gameplay input,
+capture and both eyes enabled, `vr-full` movement trace, Body IK disabled.
+Reversible 1920x1080/FSAA0 profile is active. No game/SteamVR auto launch.
+
+**Experiment-pending:** do not prepare over this candidate. In one manual run
+exercise automatic menu hover (no R1), short R2/L2 selection, Cross/Circle,
+mouse/drag priority; load a save and check stereo/head turns, move/walk/jump,
+recenter with Create, open/close the dashboard, revisit pause-menu pointing,
+then quit normally and `pwsh -File E:/call_of_juarez_vr/tools/vr_test.ps1 finish`.
+Body/arm/weapon alignment is not accepted by this Body-IK-off profile. The
+transport verifier's PASS cannot accept menu accuracy, recenter visual quality
+or resumed dashboard usability; retain explicit operator observations.
+Local procedure: CoJ ignored `work/transport-diagnosis/UI_POINTER_CANDIDATE.md`.
+Fresh preparation log and 13-check staging audit: `prepare-automatic-pointer-combined.log`
+and `automatic-pointer-combined-verification.json` in the same local directory.
+Rejected held-pointer notes are preserved inside the rejected run's local folder.
+
+## Historical documentation checkpoint — project landings
 
 **Verified / implemented:** both project READMEs now distinguish accepted bounded
 results from current gates. LTR's architecture, compatibility matrix, roadmap,
@@ -26,7 +133,7 @@ still reports the same startup candidate, game not running, and its deployed
 proxy SHA-256 matches the value recorded below. No build or physical run was
 performed for this documentation-only update.
 
-## Latest checkpoint — HMD rate cap accepted; menu ownership correction
+## Historical checkpoint — HMD rate cap accepted; menu ownership correction
 
 **Verified / live-tested / performance-validated for bounded cadence:** user
 completed and finished CoJ run `20261001T000751Z-095a23ec5916`, source
@@ -71,7 +178,7 @@ sharing skip, 0 failures; focused review has no remaining blockers. These change
 are host-tested only; menu accuracy/usability needs the isolated manual gesture.
 LTR remains independent and gains no new temporal/reconstruction validation.
 
-## Active candidate — explicit menu pointer (physical result pending)
+## Historical candidate — explicit menu pointer (completed; pointer rejected)
 
 **Host-tested / verified staging:** fresh CoJ `prepare -StartupOnly` from clean
 published commit `b67c051287e4259aa074ceaa57b1f34eb5df6b47` rebuilt Release
