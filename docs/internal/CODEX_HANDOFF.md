@@ -2,6 +2,79 @@
 
 Updated: 2026-10-01.
 
+## Latest checkpoint — HMD rate cap accepted; menu ownership correction
+
+**Verified / live-tested / performance-validated for bounded cadence:** user
+completed and finished CoJ run `20261001T000751Z-095a23ec5916`, source
+`e479e447e74871cfa37ab790ba2775234bd93a75`, manifest
+`CA8D4223E9A0CF434DA69ADFDE251307B652971FBFFB1DB56363BD9BCFE8C7AD`.
+Fresh package verification passes 98 identity/hash/size checks and independently
+reproduces ZIP SHA-256
+`E1EB8043F8C039BC361C02C40C7FD8FD5361BF462FA9567077F508A3DF915C46`.
+All four artifact snapshots match their recorded finish-time deployment hashes.
+Both summaries replay successfully. The native render window is 35.427 seconds:
+HMD property/producer target 90/90 Hz, update 87.649 Hz, pair 86.995 Hz, presenter
+new/total 84.906/88.717 Hz. This closes the bounded configured-rate gate; it does
+not establish exact 90 fresh frames/s, phase alignment or sustained tail latency.
+
+**Observed:** the operator reports that it feels much better. Two ring drops,
+72 mailbox replacements and frame-age p95/max 26.390/90.730 ms remain recorded.
+Whole-run copy-completion max 147.233 ms has no phase attribution. Sampled native
+CPU readback/copy and producer/consumer GPU waits are zero; intentional CPU
+render scheduling remains separately measured. No broader performance/support
+claim is implied. Refresh changes and missing-rate/reset recovery remain unproved.
+
+**Live-tested normal closure:** 3,009 copies and completions agree, all 3,081
+published producer leases are released, final pending/ring-depth/abandoned counts
+are zero, and same-owner OpenVR shutdown plus matching run_end complete. Finish
+restored staging and Video.scr. Raw package/extract/replay/audits are retained in
+CoJ ignored `work/transport-diagnosis/20261001T000751Z-095a23ec5916/`.
+
+**Observed / implemented / host-tested / experiment-pending:** the operator
+reports an unusable menu cursor unless both controllers stay completely still.
+Source confirms the prior always-active ray continuously injects Windows cursor
+motion and can select from a hand different from the projected ray. The user
+chose hold-L1/R1 activation. Separately authorized CoJ correction is committed
+and pushed as `b67c051287e4259aa074ceaa57b1f34eb5df6b47`: passive tracking does
+not claim the cursor; shoulder-held ownership stays with that hand until release;
+same-hand L2/R2 selects; Cross/Circle retain global accept/back. Input/pose/focus
+loss requires a fresh active release/press. Accepted motion queues selection by
+hand/claim/click, so stale events/completions cannot transfer to later input.
+Menu focus gates dispatch without starving flat capture; held menu activation
+cannot switch gameplay weapons before release. No concurrent JNI cursor-motion
+route is introduced. Fresh CoJ Release build/CTest passes 34 tests, 1 classic
+sharing skip, 0 failures; focused review has no remaining blockers. These changes
+are host-tested only; menu accuracy/usability needs the isolated manual gesture.
+LTR remains independent and gains no new temporal/reconstruction validation.
+
+## Active candidate — explicit menu pointer (physical result pending)
+
+**Host-tested / verified staging:** fresh CoJ `prepare -StartupOnly` from clean
+published commit `b67c051287e4259aa074ceaa57b1f34eb5df6b47` rebuilt Release
+and passed 34 tests, with 1 classic-sharing skip and 0 failures. Run
+`20261001T004616Z-6768e557f531`, manifest
+`1B0E8C418BD14C676BFCF61039F7DDFA42B52FD1300C5C9DEB83B4AC22A8516F`,
+manifest-file SHA-256
+`8C04D8BF3758EB48BD01914E8395E384B329643C8B3DCE282E40044A0F490BA6`,
+proxy `65B6655A3E8D7DEC61F55A358E0C95246AABD4D24E4A2FBE980195ADF1FCA401`.
+Every deployed artifact hash and run/build/clean-source identity matches.
+Read-only status: game not running, startup-profile native proxy staged,
+camera/native-stereo override and body IK disabled, reversible 1920x1080/FSAA0
+profile active. OpenVR flat/menu input remains enabled; no automatic game or
+SteamVR launch. Do not prepare over this candidate.
+
+**Experiment-pending:** manually start SteamVR/CoJ and use only the main menu.
+Without shoulder buttons, move both controllers while using the physical mouse;
+it must remain usable. Hold R1 to aim and R2 to select; repeat L1/L2. Release
+the shoulder and immediately verify mouse ownership again. Check Cross accept
+and Circle back, avoiding unnecessary setting changes. Quit normally and run
+`pwsh -File tools/vr_test.ps1 finish` from CoJ. Startup verification establishes
+provenance/presentation/restoration only; operator feedback must establish stable,
+accurate selection and coexistence. Native stereo, body/weapon, pending-frame reset
+and temporal/backend work are outside this isolated menu gesture. Local procedure
+and prepare log: CoJ ignored `work/transport-diagnosis/UI_POINTER_CANDIDATE.md`
+and `prepare-pointer-ownership.log`.
+
 ## Latest checkpoint — published CoJ baseline and HMD cadence follow-up
 
 **Verified / published:** separate CoJ repository checkpoint
@@ -47,7 +120,7 @@ failures return the process handle count to its baseline (542 -> 542).
 These are scoped host checks; no new physical CoJ or reconstruction result
 is implied.
 
-## Active candidate — configured HMD rate (physical result pending)
+## Historical candidate — configured HMD rate (completed)
 
 **Host-tested / verified staging (2026-10-01):** fresh CoJ prepare from clean
 published commit `e479e447e74871cfa37ab790ba2775234bd93a75` rebuilt Release
