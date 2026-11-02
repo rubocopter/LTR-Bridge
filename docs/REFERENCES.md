@@ -1,14 +1,17 @@
 # References and research snapshot
 
-Research date: 2026-09-16. External projects change quickly; re-check versions before using a conclusion operationally.
+Research date: 2026-10-01. External projects change quickly; re-check versions before using a conclusion operationally.
 
 ## DLSS5-Feeder
 
 - Repository: https://github.com/jlrouzies-fr/DLSS5-Feeder
 - Releases: https://github.com/jlrouzies-fr/DLSS5-Feeder/releases
-- Stable version observed: `v0.15.1`, short commit `3f62485`, released 2026-09-09.
-- Newest prerelease observed: `v1.16.0-beta.1`, short commit `55c5bca`, released 2026-09-10. It retains IPC protocol v9; 32-bit installs require the matching add-on and `host64` binary from the same build.
-- Key current topics: 32-bit helper, D3D10 relay, host-created/shared resources, protocol versioning, DLAA-style 1:1 contract, diagnostics.
+- Current inspected main: `7b41f5f3e57c260dec6012695c258e876fdfe6c5`, committed 2026-09-29, message `1.18.0-beta.1 into main (#140)`.
+- `src/feed_ipc.h` at that commit uses IPC protocol v11 and defines shared Color/Output/Depth/MV resources, build-time extents/formats/depth/MV metadata, and per-frame fence/reset/jitter messages.
+- Legacy adapter reference: `external/deepfried/v1.4.8-alpha/LEGACY-API-ADAPTER.md`; it documents a D3D9Ex/D3D10 to D3D11 relay/conversion to D3D12 path as an implementation boundary rather than proof of working legacy backends.
+- Motion-vector reference: `shaders/DLSS5_Feed.fx`; its experimental geometry mode fits camera motion from optical flow plus depth and applies validation/fallback logic.
+- The public D3D9 shader branch is a stub that requires dgVoodoo2 before the add-on path, so it is not evidence of native x86 D3D9Ex integration.
+- Key current topics: x86/x64 helper routing, D3D10/private-D3D11 relay, host-created/shared resources, protocol versioning, 1:1 temporal processing, diagnostics and experimental reconstructed motion.
 - License observed: MIT for repository code; third-party components keep their own licenses.
 
 ## DLSS5-Swapper
@@ -16,6 +19,7 @@ Research date: 2026-09-16. External projects change quickly; re-check versions b
 - Repository: https://github.com/rakanki911/DLSS5-Swapper
 - Releases: https://github.com/rakanki911/DLSS5-Swapper/releases
 - Role in this research: deployment/API detection, x86/x64 routing, component configuration, backup/restore and compatibility handling.
+- Current README breadth includes legacy D3D9/D3D8 through dgVoodoo2; this is deployment-route evidence, not native legacy temporal extraction evidence.
 - License observed: MIT for Swapper itself; third-party notices retain component-specific licenses.
 
 ## OptiScaler

@@ -101,8 +101,12 @@ DebugView g_debug_view = DebugView::scene;
 std::uint64_t g_frame_index = 0;
 std::uint32_t g_resource_generation = 0;
 std::uint32_t g_history_generation = 0;
+std::uint32_t g_camera_generation = 1;
+std::uint32_t g_config_generation = 1;
 ltr::temporal::HistoryResetReason g_pending_reset = ltr::temporal::HistoryResetReason::startup;
 bool g_previous_valid = false;
+bool g_previous_render_time_valid = false;
+double g_previous_render_seconds = 0.0;
 bool g_self_test = false;
 XMMATRIX g_previous_world = XMMatrixIdentity();
 XMMATRIX g_previous_vp = XMMatrixIdentity();
@@ -119,6 +123,8 @@ ltr::temporal::TemporalFrameDescription g_last_frame{};
 float g_cpu_probe_motion = 0.0f;
 
 ComPtr<ID3D11Device> g_device;
+D3D_DRIVER_TYPE g_effective_driver_type = D3D_DRIVER_TYPE_UNKNOWN;
+D3D_FEATURE_LEVEL g_effective_feature_level{};
 ComPtr<ID3D11DeviceContext> g_context;
 ComPtr<IDXGISwapChain> g_swap_chain;
 ComPtr<ID3D11RenderTargetView> g_backbuffer_rtv;
@@ -460,11 +466,14 @@ void CreateDeviceAndPipeline() {
     D3D_FEATURE_LEVEL obtained{};
     HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                                 levels, 3, D3D11_SDK_VERSION, &swap, &g_swap_chain, &g_device, &obtained, &g_context);
+    g_effective_driver_type = D3D_DRIVER_TYPE_HARDWARE;
     if (FAILED(hr)) {
+        g_effective_driver_type = D3D_DRIVER_TYPE_WARP;
         hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                            levels, 3, D3D11_SDK_VERSION, &swap, &g_swap_chain, &g_device, &obtained, &g_context);
     }
     CheckHr(hr, "D3D11CreateDeviceAndSwapChain");
+    g_effective_feature_level = obtained;
 
     const auto sceneVs = Compile(kSceneShader, "SceneVS", "vs_4_0");
     const auto scenePs = Compile(kSceneShader, "ScenePS", "ps_4_0");
@@ -915,11 +924,31 @@ void Render(double seconds) {
     const XMMATRIX jitteredVp = view * JitterProjection(projection, jitterX, jitterY);
 
     g_last_frame = {};
-    g_last_frame.identity.frame_index = g_frame_index; g_last_frame.identity.view_index = 0;
+    g_last_frame.identity.frame_index = g_frame_index;
+    g_last_frame.identity.transport_index = g_frame_index;
+    g_last_frame.identity.view_index = 0;
     g_last_frame.identity.resource_generation = g_resource_generation;
-    g_last_frame.identity.history_generation = g_history_generation; g_last_frame.identity.reset_reason = g_pending_reset;
+    g_last_frame.identity.history_generation = g_history_generation;
+    g_last_frame.identity.camera_generation = g_camera_generation;
+    g_last_frame.identity.config_generation = g_config_generation;
+    g_last_frame.identity.reset_reason = g_pending_reset;
     if (g_pending_reset != ltr::temporal::HistoryResetReason::none) g_last_frame.identity.history_generation = ++g_history_generation;
     g_last_frame.render_width = g_last_frame.output_width = g_width; g_last_frame.render_height = g_last_frame.output_height = g_height;
+    g_last_frame.color_rect = {0, 0, g_width, g_height};
+    g_last_frame.depth_rect = {0, 0, g_width, g_height};
+    g_last_frame.motion_rect = {0, 0, g_width, g_height};
+    g_last_frame.depth.convention = ltr::temporal::DepthConvention::hardware;
+    g_last_frame.depth.sample_count = 1;
+    g_last_frame.depth.inverted = false;
+    g_last_frame.depth.infinite_far = false;
+    g_last_frame.depth.near_plane = 0.1f;
+    g_last_frame.depth.far_plane = 100.0f;
+    g_last_frame.output_ownership = ltr::temporal::OutputOwnership::game;
+    g_last_frame.frame_delta_ms =
+        g_previous_render_time_valid && g_pending_reset == ltr::temporal::HistoryResetReason::none &&
+                seconds >= g_previous_render_seconds
+            ? static_cast<float>((seconds - g_previous_render_seconds) * 1000.0)
+            : 0.0f;
     g_last_frame.jitter_x_pixels = jitterX; g_last_frame.jitter_y_pixels = jitterY;
     g_last_frame.motion.coverage = ltr::temporal::coverage_camera | ltr::temporal::coverage_rigid_objects;
     g_last_frame.motion.known_exclusions = ltr::temporal::coverage_skinned_geometry | ltr::temporal::coverage_particles | ltr::temporal::coverage_transparency | ltr::temporal::coverage_hud;
@@ -1040,7 +1069,10 @@ void Render(double seconds) {
     g_previous_jitter_x = jitterX; g_previous_jitter_y = jitterY;
     g_previous_deformation_phase = deformationPhase;
     g_previous_hud_center_x = hudCenterX;
-    g_previous_valid = true; g_pending_reset = ltr::temporal::HistoryResetReason::none;
+    g_previous_valid = true;
+    g_previous_render_seconds = seconds;
+    g_previous_render_time_valid = true;
+    g_pending_reset = ltr::temporal::HistoryResetReason::none;
     ++g_frame_index; UpdateTitle();
 }
 
@@ -1176,6 +1208,7 @@ bool ValidateStats(const ReadbackStats& stats, bool expectMotion, bool requireSt
 
 bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
                       bool expectMotion, bool requireStaticCoverage, std::ostringstream& report) {
+    if (g_scenario != scenario) ++g_config_generation;
     g_scenario = scenario;
     g_pending_reset = ltr::temporal::HistoryResetReason::scenario_change;
     const bool expectCameraMotion = scenario == Scenario::camera_translate || scenario == Scenario::camera_rotate;
@@ -1187,13 +1220,25 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     const std::uint32_t expectedGeneration = g_history_generation + 1u;
 
     Render(0.0);
+    const auto resetFrame = g_last_frame;
     const ReadbackStats resetStats = ReadbackGroundTruth();
     const ReconstructionStats resetReconstructionStats = ReadbackReconstructionComparison();
     const HistoryValidityStats resetHistoryStats = ReadbackHistoryValidity(false);
     const bool resetReconstructionOk = ValidateReconstruction(resetReconstructionStats, false, false);
     const bool resetHistoryOk = ValidateHistoryValidity(resetHistoryStats, false, scenario);
-    const bool resetOk = g_last_frame.identity.history_generation == expectedGeneration &&
-                         g_last_frame.identity.reset_reason == ltr::temporal::HistoryResetReason::scenario_change &&
+    const bool resetMetadataOk =
+        ltr::temporal::HasValidSubrect(resetFrame.color_rect, resetFrame.render_width, resetFrame.render_height) &&
+        ltr::temporal::HasValidSubrect(resetFrame.depth_rect, resetFrame.render_width, resetFrame.render_height) &&
+        ltr::temporal::HasValidSubrect(resetFrame.motion_rect, resetFrame.render_width, resetFrame.render_height) &&
+        resetFrame.depth.convention == ltr::temporal::DepthConvention::hardware &&
+        resetFrame.depth.sample_count == 1u && !resetFrame.depth.inverted &&
+        resetFrame.depth.near_plane == 0.1f && resetFrame.depth.far_plane == 100.0f &&
+        resetFrame.output_ownership == ltr::temporal::OutputOwnership::game &&
+        ltr::temporal::HasValidTemporalMetadata(resetFrame) &&
+        resetFrame.frame_delta_ms == 0.0f;
+    const bool resetOk = resetFrame.identity.history_generation == expectedGeneration &&
+                         resetFrame.identity.reset_reason == ltr::temporal::HistoryResetReason::scenario_change &&
+                         resetMetadataOk &&
                          ValidateStats(resetStats, false, false) && resetReconstructionOk && resetHistoryOk;
     AppendStats(report, name, "reset", resetStats, resetOk);
     AppendReconstructionStats(report, name, "reset", resetReconstructionStats, resetReconstructionOk);
@@ -1208,10 +1253,23 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
     const bool steadyReconstructionOk =
         ValidateReconstruction(steadyReconstructionStats, expectCameraMotion, expectCameraOnlyLimitation);
     const bool steadyHistoryOk = ValidateHistoryValidity(steadyHistoryStats, true, scenario);
+    const bool steadyMetadataOk =
+        ltr::temporal::HasValidSubrect(g_last_frame.color_rect, g_last_frame.render_width, g_last_frame.render_height) &&
+        ltr::temporal::HasValidSubrect(g_last_frame.depth_rect, g_last_frame.render_width, g_last_frame.render_height) &&
+        ltr::temporal::HasValidSubrect(g_last_frame.motion_rect, g_last_frame.render_width, g_last_frame.render_height) &&
+        g_last_frame.depth.convention == ltr::temporal::DepthConvention::hardware &&
+        g_last_frame.depth.sample_count == 1u && !g_last_frame.depth.inverted &&
+        g_last_frame.depth.near_plane == 0.1f && g_last_frame.depth.far_plane == 100.0f &&
+        g_last_frame.output_ownership == ltr::temporal::OutputOwnership::game &&
+        ltr::temporal::HasValidTemporalMetadata(g_last_frame) &&
+        std::isfinite(g_last_frame.frame_delta_ms) &&
+        g_last_frame.frame_delta_ms == 1000.0f &&
+        ltr::temporal::CanReuseValidatedHistory(resetFrame, g_last_frame);
     const bool steadyOk = g_last_frame.identity.frame_index == expectedFrame &&
                           g_last_frame.identity.history_generation == expectedGeneration &&
                           g_last_frame.identity.reset_reason == ltr::temporal::HistoryResetReason::none &&
-                          ValidateStats(steadyStats, expectMotion, requireStaticCoverage) && steadyReconstructionOk && steadyHistoryOk;
+                          steadyMetadataOk && ValidateStats(steadyStats, expectMotion, requireStaticCoverage) &&
+                          steadyReconstructionOk && steadyHistoryOk;
     AppendStats(report, name, "steady", steadyStats, steadyOk);
     AppendReconstructionStats(report, name, "steady", steadyReconstructionStats, steadyReconstructionOk);
     AppendHistoryValidityStats(report, name, "steady", steadyHistoryStats, steadyHistoryOk);
@@ -1221,11 +1279,22 @@ bool RunScenarioCheck(Scenario scenario, const char* name, double secondTime,
 bool RunDeterministicSelfTest() {
     std::ostringstream report;
     report << "LTR Bridge deterministic D3D11 temporal readback\n";
+    ComPtr<IDXGIDevice> dxgi_device;
+    CheckHr(g_device.As(&dxgi_device), "QueryInterface(IDXGIDevice)");
+    ComPtr<IDXGIAdapter> dxgi_adapter;
+    CheckHr(dxgi_device->GetAdapter(&dxgi_adapter), "IDXGIDevice::GetAdapter");
+    DXGI_ADAPTER_DESC adapter_desc{};
+    CheckHr(dxgi_adapter->GetDesc(&adapter_desc), "IDXGIAdapter::GetDesc");
+    report << "device_driver=" << (g_effective_driver_type == D3D_DRIVER_TYPE_HARDWARE ? "hardware" : "warp")
+           << " adapter_vendor=0x" << std::hex << adapter_desc.VendorId
+           << " adapter_device=0x" << adapter_desc.DeviceId
+           << " feature_level=0x" << static_cast<std::uint32_t>(g_effective_feature_level)
+           << std::dec << "\n";
     report << "extent=" << g_width << 'x' << g_height
            << " motion=R32G32_FLOAT direction=current-to-previous units=render-pixels jitter-included=false\n";
 
     bool ok = true;
-    ok &= RunScenarioCheck(Scenario::static_scene, "static", 0.0, false, false, report);
+    ok &= RunScenarioCheck(Scenario::static_scene, "static", 1.0, false, false, report);
     ok &= RunScenarioCheck(Scenario::camera_translate, "camera-translate", 1.0, true, false, report);
     ok &= RunScenarioCheck(Scenario::camera_rotate, "camera-rotate", 1.0, true, false, report);
     ok &= RunScenarioCheck(Scenario::rigid_object, "rigid-object", 1.0, true, true, report);
@@ -1252,7 +1321,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         else if (wParam == VK_TAB) g_debug_view = static_cast<DebugView>((static_cast<std::uint32_t>(g_debug_view) + 1u) % static_cast<std::uint32_t>(DebugView::count));
         else if (wParam == 'R') g_pending_reset = ltr::temporal::HistoryResetReason::manual;
-        else if (wParam >= '1' && wParam <= '9') { g_scenario = static_cast<Scenario>(wParam - '1'); g_pending_reset = ltr::temporal::HistoryResetReason::scenario_change; }
+        else if (wParam >= '1' && wParam <= '9') {
+            const auto nextScenario = static_cast<Scenario>(wParam - '1');
+            if (g_scenario != nextScenario) ++g_config_generation;
+            g_scenario = nextScenario;
+            g_pending_reset = ltr::temporal::HistoryResetReason::scenario_change;
+        }
         return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, wParam, lParam);
@@ -1285,6 +1359,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         }
         return static_cast<int>(msg.wParam);
     } catch (const std::exception& error) {
-        MessageBoxA(nullptr, error.what(), "LTR Bridge temporal harness", MB_OK | MB_ICONERROR); return 1;
+        if (g_self_test) {
+            OutputDebugStringA(error.what());
+            return 1;
+        }
+        MessageBoxA(nullptr, error.what(), "LTR Bridge temporal harness", MB_OK | MB_ICONERROR);
+        return 1;
     }
 }

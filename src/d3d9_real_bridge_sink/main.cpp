@@ -643,6 +643,10 @@ wait_for_producer_ready(ID3D12Fence *fence, std::uint64_t value,
                " generation=" + std::to_string(options.generation) +
                " frames=" + std::to_string(options.frames) +
                " consumer_copies=" + std::to_string(options.frames) +
+               " validation_mode=" +
+                   (options.validate_synthetic_pattern ? "synthetic_first_pixel_per_frame" : "disabled") +
+               " validation_samples=" +
+                   std::to_string(options.validate_synthetic_pattern ? options.frames : 0u) +
                " validation_mismatches=" + std::to_string(mismatches) +
                " RESULT PASS");
   return 0;

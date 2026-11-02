@@ -10,12 +10,16 @@ The contract must describe temporal meaning separately from transport representa
 TemporalFrameInput
   identity:
     resource_generation
+    history_generation
     frame_index
-    camera_or_view_id?
+    transport_index?        # diagnostic/delivery serial, not temporal continuity
+    view_id
+    camera_generation
+    config_generation
     history_reset
     eye_id?                 # VR only
     predicted_display_time? # VR only
-    frame_delta_ms?
+    frame_delta_ms
 
   extents:
     render_width/height
@@ -64,6 +68,18 @@ TemporalFrameInput
 ```
 
 This is a semantic model, not a C++ layout.
+
+The current internal C++ subset is **implemented / host-tested** in
+`src/temporal/temporal_frame.h` and the controlled D3D11 harness. It now carries
+source `frame_index` separately from diagnostic `transport_index`, plus
+view/resource/history/camera/config generations, reset reason, valid color/depth/
+motion subrects, depth convention/sample/near-far metadata, output ownership and
+frame delta. `SameTemporalFrameIdentity` rejects stale or generation-mismatched
+same-frame inputs while deliberately ignoring the transport serial;
+`CanReuseHistory` requires a sequential source frame and stable semantic
+generations/extents. These are internal experiment semantics and do not promote
+the provisional model to a public ABI. Real Call of Juarez production of those
+fields remains **experiment-pending**.
 
 The 2026-09-23 review of `Beren5556/W40KRT_VR@929bc9c1626b92d102def4ab405bf943c83bab24` provides additional **observed** evidence for these fields. Its per-eye NGX job ABI identifies generation/frame/camera/eye and carries subrects, jitter and MV scale; its optional OFXR provider V2 additionally publishes depth convention, frame delta, reset and stream identity and explicitly rejects stale/queue-mismatched pairs. Those concrete layouts are implementation-specific evidence, not the LTR Bridge ABI.
 
@@ -158,7 +174,7 @@ History reset should be triggered by more than a resize. Candidate reasons inclu
 - entering/exiting a menu or video path when game frames are no longer temporally continuous;
 - eye target recreation in VR.
 
-History/resource generation should also be monotonic across recreation so a delayed job or guide cannot become valid merely because a pointer/slot was reused. Where temporal inputs can arrive through different producers, pair them by generation/frame/view (or an equivalently strong stream identity) and reject stale or ownership-mismatched data.
+History/resource generation should also be monotonic across recreation so a delayed job or guide cannot become valid merely because a pointer/slot was reused. Where temporal inputs can arrive through different producers, pair them by source frame plus view/resource/history/camera/config generation (or an equivalently strong stream identity) and reject stale or ownership-mismatched data. A transport submission serial is useful for synchronization/diagnostics but must not substitute for source-frame continuity: a skipped game frame is a temporal discontinuity even when successful transport submissions remain sequential.
 
 ## VR extension
 

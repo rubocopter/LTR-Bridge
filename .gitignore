@@ -10,3 +10,4 @@ out/
 *.log
 *.dmp
 research-cache/
+*.obj

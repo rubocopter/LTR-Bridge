@@ -2,13 +2,22 @@
 
 The roadmap is evidence-driven. Items must be rechecked against repository state before work begins.
 
-## Current gate — 2026-10-01
+## Current gate — 2026-10-06
 
-**Live-tested:** the clean Steam Call of Juarez D3D9Ex observer now completes a
-bounded two-slot multiframe color transfer through an engine reset. The stalled
-old generation is cancelled; the replacement completes 12/12 frames with zero
-sampled mismatches. This is one-pixel-per-frame validation on the exercised
-build/host, not full-image or general device-loss acceptance.
+**Live-tested (historical):** the clean Steam Call of Juarez D3D9Ex observer
+completed a bounded two-slot multiframe color transfer through an engine reset.
+The stalled old generation was cancelled; the replacement completed 12/12
+frames, with matching ready/done fences and 12 consumer copies. The real
+observer disabled synthetic pixel comparison (`validation_samples=0`): its
+`validation_mismatches=0` does not establish color-content correctness.
+One-pixel-per-frame validation applies to the separate synthetic producer.
+No new game run was performed during the post-format audit.
+
+**Host-tested (2026-10-06):** new Release x64/x86 builds confirm separate
+temporal metadata, geometry/subrect, sample and history predicates, with focused
+negative tests; the D3D11 harness self-test records the selected hardware
+adapter, and the sink now reports validation mode and sample count. These are
+offline results; see `docs/internal/CODEX_HANDOFF.md`.
 
 **Experiment-pending:** establish coherent real-game depth/camera/jitter/MV and
 history/view identity, then run the host-tested XeSS 3.0.2 Native AA backend at
@@ -85,7 +94,7 @@ A renderer-transfer matrix now keeps the same RGBA8 cross-process contract while
 
 Status: **real-game observation plus a one-shot D3D9-facing -> D3D9Ex -> D3D11 x86 -> D3D12 x64 color path are host-tested; the promoted D3D9Ex route survives the bounded startup window with a live-tested resource-class MANAGED adaptation; a real reset preserves the sampled adapted texture contents; and the exact two-slot observer/client/x64 path is live-tested through active-generation cancellation and a fully completed post-reset generation. Device-loss semantics, broader resource coverage, visual correctness and reconstruction remain pending**.
 
-Current installation baseline (2026-09-30), **observed / user-reported**: Call of Juarez is now a clean reinstall with no VR mod or prior bridge deployment left in the game directory. The completed items below remain historical evidence from earlier probe runs. Any new real-game experiment should bootstrap its required instrumentation temporarily and verify cleanup/restoration when the run ends.
+Historical installation baseline (2026-09-30), **observed / user-reported**: Call of Juarez was a clean reinstall at that time. That claim is superseded for new runs: on 2026-10-06, the installed Steam folder still contained a CoJ VR manifest, even though the executable's hash had returned to its recorded original value. The completed items below remain historical evidence. Further LTR runtime work requires an independent vanilla target with its own target/process/ownership manifest, without altering CoJ VR staging.
 
 Use the clean Steam Call of Juarez renderer to establish the smallest complete path before expanding the matrix:
 
@@ -100,9 +109,9 @@ Use the clean Steam Call of Juarez renderer to establish the smallest complete p
 - [x] implement the opt-in replacement for the one-shot handoff using the same host-tested bounded ready/done client, without validation readback in the game-side frame path; the observer join is compile-tested and still requires live validation;
 - [x] replace the crash-by-crash MANAGED allocation fallbacks with a bounded resource-class semantic adaptation and live-test the observed startup writes: six 2D textures plus one cube use DEFAULT|DYNAMIC, one VB and one IB use DEFAULT with usage preserved; the tested run reaches 120 Presents with 118 successful CPU-write lock traces and zero exception markers;
 - [x] prove the adapted resources' lifetime across a real `Reset`: all nine tracked adapted resources remain alive; four directly lockable textures are byte-identical before/after; generation-1 resource 9 remains actively bound in generation-2 draws; the run reaches 118 EndScenes / 120 Presents. Resources 5/7 are not directly hashable with the current probe, and device-loss semantics remain pending;
-- [x] live-test 12 real submissions/completions and a reset-triggered generation replacement with clean fail-open teardown. A forced-stall generation 1 at `2560x1440` is cancelled at `reset_begin`; generation 2 at `1920x1080` completes 12/12 with `ready=done=12`, 12 D3D12 consumer copies, zero sampled mismatches and zero observer capture failures;
+- [x] live-test 12 real submissions/completions and a reset-triggered generation replacement with clean fail-open teardown. A forced-stall generation 1 at `2560x1440` is cancelled at `reset_begin`; generation 2 at `1920x1080` completes 12/12 with `ready=done=12`, 12 D3D12 consumer copies and zero observer capture failures. Pixel comparison was disabled (`validation_samples=0`); content correctness is unverified;
 - [ ] exercise actual device-loss handling and repeated/sustained reset coverage; prove fail-open behavior, stale-result rejection and cleanup under consumer loss or capture failure;
-- [ ] extend observation only where required to identify scene color/depth, transforms, draws/passes, HUD composition and reset lifecycle for temporal semantics;
+- [ ] execute the bounded real temporal-provenance experiment in `docs/internal/REAL_TEMPORAL_PROVENANCE_EXPERIMENT.md` on a separately verified vanilla copy; resolve scene color, shader-readable depth, effective shader camera/projection, actual jitter and MV coverage before constructing a joined frame;
 - [ ] replace probe-style global/static hook ownership with per-device/per-swapchain state and explicit resource generations where the live lifecycle test shows it is required;
 - [ ] emit the real renderer inputs through the internal `TemporalFrame` semantics already exercised by the harness, including frame/view identity, history validity and reset reason;
 - [x] connect the real observer to the existing x86 -> x64 GPU transport in source using the shared two-slot client; the exact contract is host-tested offline and the observer integration is compile-tested;
@@ -114,7 +123,7 @@ Decision gate: do not add another source API or backend until one real frame can
 
 Optimization work in this phase is measurement-driven. Record event-query stalls, GPU copies, ring/backpressure behavior, allocations, logging cost, frame pacing and latency in the real path; change the synthetic bridge only when the real renderer exposes a new hazard.
 
-**Observed failed real-game multiframe attempt, offline resolution and live reset-generation result (2026-09-17 to 2026-09-30):** the initial two-slot/12-frame game experiment created D3D11-owned `SHARED_NTHANDLE | SHARED_KEYEDMUTEX` transport textures and launched a persistent x64 sink, but ended at `stage=completion RESULT FAIL`. A game-free probe reproduced the failure: fences reached 12 while D3D12 content validation read zero. The replacement direction makes x64 D3D12 own the slots and `done`, while x86 D3D11 opens them and owns `ready`. Its client is shared between the synthetic producer and observer. After extraction, five `64x64` and three `2560x1440` 12-frame runs completed with zero mismatches and forced backpressure. The observer integration keeps one D3D9/D3D11 source relay per transport slot. Since slot reuse is admitted only after that slot's prior `done` value, and `done` is downstream of the matching `ready` signal and D3D11 copy, the redundant per-frame D3D11 event-query wait has been removed while the D3D9 event query remains the producer-to-D3D11 handoff. The synthetic producer waits for slot admission before rewriting its matching source; 3/3 `64x64` and 2/2 `2560x1440` forced-backpressure runs passed 12/12 with zero mismatches after this refinement. The optimized observer path is now **live-tested** through a real engine-driven reset: generation 1 is cancelled while stalled, generation 2 is rebuilt lazily and completes 12/12 through observer/client/x64 at `1920x1080`, with ready/done=12, 12 D3D12 consumer copies and zero sampled mismatches. Broader sustained/failure/device-loss coverage remains pending.
+**Observed failed real-game multiframe attempt, offline resolution and live reset-generation result (2026-09-17 to 2026-09-30):** the initial two-slot/12-frame game experiment created D3D11-owned `SHARED_NTHANDLE | SHARED_KEYEDMUTEX` transport textures and launched a persistent x64 sink, but ended at `stage=completion RESULT FAIL`. A game-free probe reproduced the failure: fences reached 12 while D3D12 content validation read zero. The replacement direction makes x64 D3D12 own the slots and `done`, while x86 D3D11 opens them and owns `ready`. Its client is shared between the synthetic producer and observer. After extraction, five `64x64` and three `2560x1440` 12-frame runs completed with zero mismatches and forced backpressure. The observer integration keeps one D3D9/D3D11 source relay per transport slot. Since slot reuse is admitted only after that slot's prior `done` value, and `done` is downstream of the matching `ready` signal and D3D11 copy, the redundant per-frame D3D11 event-query wait has been removed while the D3D9 event query remains the producer-to-D3D11 handoff. The synthetic producer waits for slot admission before rewriting its matching source; 3/3 `64x64` and 2/2 `2560x1440` forced-backpressure runs passed 12/12 with zero mismatches after this refinement. The optimized observer path is now **live-tested** through a real engine-driven reset: generation 1 is cancelled while stalled, generation 2 is rebuilt lazily and completes 12/12 through observer/client/x64 at `1920x1080`, with ready/done=12 and 12 D3D12 consumer copies. The real observer had synthetic pixel validation disabled (`validation_samples=0`), so its `validation_mismatches=0` field represents zero comparisons and does not establish content correctness. Broader sustained/failure/device-loss coverage remains pending.
 
 ## Phase 4 — same-game native vs dgVoodoo temporal provenance
 

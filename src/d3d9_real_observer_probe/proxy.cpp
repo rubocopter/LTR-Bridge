@@ -8,6 +8,7 @@
 #include "../d3d9_real_bridge_probe/client.h"
 #include "../d3d9_real_bridge_probe/protocol.h"
 #include "managed_compat.h"
+#include "temporal_provenance.h"
 
 #include <algorithm>
 #include <array>
@@ -126,6 +127,9 @@ constexpr std::size_t kIndexBufferUnlockIndex = 12;
 constexpr std::uintptr_t kObservedD3D9CanonicalDeviceVtableRva = 0x1008;
 constexpr std::uint64_t kSummaryFrame = 120;
 constexpr std::uint32_t kManagedDrawStateSampleLimit = 128;
+constexpr std::uint64_t kTemporalProvenanceGenerationFrameLimit = 4;
+constexpr std::uint32_t kTemporalProvenanceDrawSampleLimit = 32;
+constexpr UINT kTemporalProvenanceVsConstantCount = 64;
 
 struct RealBridgeRuntime;
 
@@ -149,6 +153,7 @@ struct DeviceState {
   std::uint32_t managed_draw_scan_samples = 0;
   std::uint64_t managed_draw_scan_stale_bindings = 0;
   std::uint64_t managed_draw_scan_query_failures = 0;
+  ltr::d3d9_real_observer::TemporalProvenanceState temporal_provenance{};
   D3DSURFACE_DESC render_target{};
   D3DSURFACE_DESC depth{};
   std::array<D3DMATRIX, 3> last_transforms{};
@@ -333,6 +338,14 @@ rehook_observer_device_hooks_after_state_block(IDirect3DDevice9 *device);
   char value[8]{};
   const DWORD length = GetEnvironmentVariableA(
       "LTR_D3D9_RESOURCE_CENSUS", value,
+      static_cast<DWORD>(std::size(value)));
+  return length > 0 && length < std::size(value) && value[0] == '1';
+}
+
+[[nodiscard]] bool temporal_provenance_requested() {
+  char value[8]{};
+  const DWORD length = GetEnvironmentVariableA(
+      "LTR_D3D9_TEMPORAL_PROVENANCE", value,
       static_cast<DWORD>(std::size(value)));
   return length > 0 && length < std::size(value) && value[0] == '1';
 }
@@ -2506,6 +2519,147 @@ void observe_managed_draw_state(IDirect3DDevice9 *device, const char *draw) {
   finish_managed_draw_scan_sample(ticket, draw, stale_bindings, query_failures);
 }
 
+[[nodiscard]] std::uint64_t temporal_provenance_hash(const void *data,
+                                                     std::size_t size) {
+  constexpr std::uint64_t kOffset = 14695981039346656037ull;
+  constexpr std::uint64_t kPrime = 1099511628211ull;
+  const auto *bytes = static_cast<const std::uint8_t *>(data);
+  std::uint64_t hash = kOffset;
+  for (std::size_t index = 0; index < size; ++index) {
+    hash ^= bytes[index];
+    hash *= kPrime;
+  }
+  return hash;
+}
+
+void observe_temporal_provenance_draw(IDirect3DDevice9 *device,
+                                      const char *draw) {
+  if (!device || !temporal_provenance_requested())
+    return;
+
+  ltr::d3d9_real_observer::TemporalProvenanceDrawTicket ticket{};
+  std::uint32_t device_id = 0;
+  {
+    std::lock_guard lock(g_state_mutex);
+    const auto it = g_devices.find(device);
+    if (it == g_devices.end())
+      return;
+    DeviceState &state = it->second;
+    const auto sample = state.temporal_provenance.acquire_draw_sample(
+        state.resource_generation, kTemporalProvenanceGenerationFrameLimit,
+        kTemporalProvenanceDrawSampleLimit);
+    if (!sample)
+      return;
+    ticket = *sample;
+    device_id = state.id;
+  }
+
+  ComPtr<IDirect3DSurface9> render_target;
+  const HRESULT render_target_hr =
+      device->GetRenderTarget(0, render_target.GetAddressOf());
+  D3DSURFACE_DESC render_target_desc{};
+  const HRESULT render_target_desc_hr =
+      SUCCEEDED(render_target_hr) && render_target
+          ? render_target->GetDesc(&render_target_desc)
+          : E_FAIL;
+
+  ComPtr<IDirect3DSurface9> depth;
+  const HRESULT depth_hr = device->GetDepthStencilSurface(depth.GetAddressOf());
+  D3DSURFACE_DESC depth_desc{};
+  const HRESULT depth_desc_hr =
+      SUCCEEDED(depth_hr) && depth ? depth->GetDesc(&depth_desc) : E_FAIL;
+
+  D3DVIEWPORT9 viewport{};
+  const HRESULT viewport_hr = device->GetViewport(&viewport);
+
+  ComPtr<IDirect3DVertexShader9> vertex_shader;
+  const HRESULT vertex_shader_hr =
+      device->GetVertexShader(vertex_shader.GetAddressOf());
+  ComPtr<IDirect3DPixelShader9> pixel_shader;
+  const HRESULT pixel_shader_hr =
+      device->GetPixelShader(pixel_shader.GetAddressOf());
+
+  D3DCAPS9 caps{};
+  const HRESULT caps_hr = device->GetDeviceCaps(&caps);
+  const UINT vs_constant_count =
+      SUCCEEDED(caps_hr)
+          ? (std::min)(kTemporalProvenanceVsConstantCount,
+                       static_cast<UINT>(caps.MaxVertexShaderConst))
+          : 0;
+  std::array<float, kTemporalProvenanceVsConstantCount * 4> vs_constants{};
+  const HRESULT vs_constants_hr =
+      vs_constant_count != 0
+          ? device->GetVertexShaderConstantF(0, vs_constants.data(),
+                                             vs_constant_count)
+          : E_FAIL;
+  const std::uint64_t vs_constant_hash =
+      SUCCEEDED(vs_constants_hr)
+          ? temporal_provenance_hash(
+                vs_constants.data(),
+                static_cast<std::size_t>(vs_constant_count) * 4 * sizeof(float))
+          : 0;
+
+  std::ostringstream out;
+  out << "event=temporal_provenance_draw"
+      << " device_id=" << device_id
+      << " source_frame_index=" << ticket.source_frame_index
+      << " generation_frame_index=" << ticket.generation_frame_index
+      << " view_id=" << ticket.view_id
+      << " resource_generation=" << ticket.resource_generation
+      << " sample=" << ticket.sample_index << " draw=" << draw
+      << " rt_hr=0x" << std::hex
+      << static_cast<unsigned long>(render_target_hr)
+      << " rt_desc_hr=0x" << static_cast<unsigned long>(render_target_desc_hr)
+      << " rt=0x"
+      << reinterpret_cast<std::uintptr_t>(render_target.Get())
+      << " depth_hr=0x" << static_cast<unsigned long>(depth_hr)
+      << " depth_desc_hr=0x" << static_cast<unsigned long>(depth_desc_hr)
+      << " depth=0x" << reinterpret_cast<std::uintptr_t>(depth.Get())
+      << " viewport_hr=0x" << static_cast<unsigned long>(viewport_hr)
+      << " vs_hr=0x" << static_cast<unsigned long>(vertex_shader_hr)
+      << " vs=0x" << reinterpret_cast<std::uintptr_t>(vertex_shader.Get())
+      << " ps_hr=0x" << static_cast<unsigned long>(pixel_shader_hr)
+      << " ps=0x" << reinterpret_cast<std::uintptr_t>(pixel_shader.Get())
+      << " caps_hr=0x" << static_cast<unsigned long>(caps_hr)
+      << " vs_constants_hr=0x" << static_cast<unsigned long>(vs_constants_hr)
+      << " vs_constant_hash=0x" << vs_constant_hash << std::dec
+      << " vs_constant_start=0"
+      << " vs_constant_count=" << vs_constant_count;
+  if (SUCCEEDED(render_target_desc_hr)) {
+    out << " rt_width=" << render_target_desc.Width
+        << " rt_height=" << render_target_desc.Height
+        << " rt_format=" << static_cast<unsigned>(render_target_desc.Format)
+        << " rt_usage=0x" << std::hex << render_target_desc.Usage << std::dec
+        << " rt_pool=" << static_cast<unsigned>(render_target_desc.Pool)
+        << " rt_multisample="
+        << static_cast<unsigned>(render_target_desc.MultiSampleType);
+  }
+  if (SUCCEEDED(depth_desc_hr)) {
+    out << " depth_width=" << depth_desc.Width
+        << " depth_height=" << depth_desc.Height
+        << " depth_format=" << static_cast<unsigned>(depth_desc.Format)
+        << " depth_usage=0x" << std::hex << depth_desc.Usage << std::dec
+        << " depth_pool=" << static_cast<unsigned>(depth_desc.Pool)
+        << " depth_multisample="
+        << static_cast<unsigned>(depth_desc.MultiSampleType);
+  }
+  if (SUCCEEDED(viewport_hr)) {
+    out << " viewport=" << viewport.X << ',' << viewport.Y << ','
+        << viewport.Width << ',' << viewport.Height << ','
+        << viewport.MinZ << ',' << viewport.MaxZ;
+  }
+  if (SUCCEEDED(vs_constants_hr)) {
+    const UINT logged_registers = (std::min)(vs_constant_count, 16u);
+    for (UINT reg = 0; reg < logged_registers; ++reg) {
+      const std::size_t base = static_cast<std::size_t>(reg) * 4;
+      out << " c" << reg << '=' << vs_constants[base] << ','
+          << vs_constants[base + 1] << ',' << vs_constants[base + 2] << ','
+          << vs_constants[base + 3];
+    }
+  }
+  append_line(out.str());
+}
+
 void track_managed_surface(IDirect3DSurface9 *surface, std::uint32_t resource_id,
                            ManagedResourceKind parent_kind,
                            D3DCUBEMAP_FACES face, UINT level) {
@@ -3482,6 +3636,7 @@ HRESULT STDMETHODCALLTYPE hook_reset(IDirect3DDevice9 *device,
       if (it != g_devices.end()) {
         ++it->second.reset_count;
         ++it->second.resource_generation;
+        it->second.temporal_provenance.on_reset_result(true);
         it->second.first_sample_written = false;
         it->second.complete_sample_written = false;
         it->second.render_target_observed = false;
@@ -3942,6 +4097,7 @@ HRESULT STDMETHODCALLTYPE hook_draw_primitive(IDirect3DDevice9 *device,
                                                UINT start_vertex,
                                                UINT primitive_count) {
   observe_managed_draw_state(device, "draw_primitive");
+  observe_temporal_provenance_draw(device, "draw_primitive");
   return g_real_draw_primitive(device, primitive_type, start_vertex,
                                primitive_count);
 }
@@ -3951,6 +4107,7 @@ HRESULT STDMETHODCALLTYPE hook_draw_indexed_primitive(
     INT base_vertex_index, UINT min_vertex_index, UINT num_vertices,
     UINT start_index, UINT primitive_count) {
   observe_managed_draw_state(device, "draw_indexed_primitive");
+  observe_temporal_provenance_draw(device, "draw_indexed_primitive");
   return g_real_draw_indexed_primitive(
       device, primitive_type, base_vertex_index, min_vertex_index, num_vertices,
       start_index, primitive_count);
@@ -4043,7 +4200,133 @@ HRESULT STDMETHODCALLTYPE hook_present(IDirect3DDevice9 *device,
         << std::dec;
     append_line(out.str());
   }
+
+  ltr::d3d9_real_observer::TemporalProvenancePresentTicket
+      temporal_present_ticket{};
+  std::uint32_t temporal_present_device_id = 0;
+  bool observe_temporal_present = false;
+  if (temporal_provenance_requested()) {
+    std::lock_guard lock(g_state_mutex);
+    const auto it = g_devices.find(device);
+    if (it != g_devices.end()) {
+      DeviceState &state = it->second;
+      const auto sample = state.temporal_provenance.acquire_present_sample(
+          state.resource_generation, kTemporalProvenanceGenerationFrameLimit);
+      if (sample) {
+        temporal_present_ticket = *sample;
+        temporal_present_device_id = state.id;
+        observe_temporal_present = true;
+      }
+    }
+  }
+
+  ComPtr<IDirect3DSurface9> temporal_present_rt;
+  ComPtr<IDirect3DSurface9> temporal_present_backbuffer;
+  D3DSURFACE_DESC temporal_present_rt_desc{};
+  D3DSURFACE_DESC temporal_present_backbuffer_desc{};
+  HRESULT temporal_present_rt_hr = E_FAIL;
+  HRESULT temporal_present_rt_desc_hr = E_FAIL;
+  HRESULT temporal_present_backbuffer_hr = E_FAIL;
+  HRESULT temporal_present_backbuffer_desc_hr = E_FAIL;
+  RECT temporal_present_source_rect{};
+  RECT temporal_present_dest_rect{};
+  const bool temporal_present_has_source_rect = source != nullptr;
+  const bool temporal_present_has_dest_rect = dest != nullptr;
+  if (observe_temporal_present) {
+    if (source)
+      temporal_present_source_rect = *source;
+    if (dest)
+      temporal_present_dest_rect = *dest;
+    temporal_present_rt_hr =
+        device->GetRenderTarget(0, temporal_present_rt.GetAddressOf());
+    if (SUCCEEDED(temporal_present_rt_hr) && temporal_present_rt) {
+      temporal_present_rt_desc_hr =
+          temporal_present_rt->GetDesc(&temporal_present_rt_desc);
+    }
+    temporal_present_backbuffer_hr = device->GetBackBuffer(
+        0, 0, D3DBACKBUFFER_TYPE_MONO,
+        temporal_present_backbuffer.GetAddressOf());
+    if (SUCCEEDED(temporal_present_backbuffer_hr) &&
+        temporal_present_backbuffer) {
+      temporal_present_backbuffer_desc_hr =
+          temporal_present_backbuffer->GetDesc(&temporal_present_backbuffer_desc);
+    }
+  }
   const HRESULT hr = g_real_present(device, source, dest, window, dirty);
+  if (observe_temporal_present) {
+    std::ostringstream out;
+    out << "event=temporal_provenance_present"
+        << " device_id=" << temporal_present_device_id
+        << " source_frame_index="
+        << temporal_present_ticket.source_frame_index
+        << " generation_frame_index="
+        << temporal_present_ticket.generation_frame_index
+        << " view_id=" << temporal_present_ticket.view_id
+        << " resource_generation="
+        << temporal_present_ticket.resource_generation
+        << " present_hr=0x" << std::hex << static_cast<unsigned long>(hr)
+        << " rt_hr=0x" << static_cast<unsigned long>(temporal_present_rt_hr)
+        << " rt_desc_hr=0x"
+        << static_cast<unsigned long>(temporal_present_rt_desc_hr)
+        << " rt=0x"
+        << reinterpret_cast<std::uintptr_t>(temporal_present_rt.Get())
+        << " backbuffer_hr=0x"
+        << static_cast<unsigned long>(temporal_present_backbuffer_hr)
+        << " backbuffer_desc_hr=0x"
+        << static_cast<unsigned long>(temporal_present_backbuffer_desc_hr)
+        << " backbuffer=0x"
+        << reinterpret_cast<std::uintptr_t>(temporal_present_backbuffer.Get())
+        << std::dec
+        << " rt_is_backbuffer="
+        << (temporal_present_rt && temporal_present_backbuffer &&
+            temporal_present_rt.Get() == temporal_present_backbuffer.Get())
+        << " source_rect=";
+    if (temporal_present_has_source_rect) {
+      out << temporal_present_source_rect.left << ','
+          << temporal_present_source_rect.top << ','
+          << temporal_present_source_rect.right << ','
+          << temporal_present_source_rect.bottom;
+    } else {
+      out << "full";
+    }
+    out << " dest_rect=";
+    if (temporal_present_has_dest_rect) {
+      out << temporal_present_dest_rect.left << ','
+          << temporal_present_dest_rect.top << ','
+          << temporal_present_dest_rect.right << ','
+          << temporal_present_dest_rect.bottom;
+    } else {
+      out << "window_client";
+    }
+    out << " window=0x" << std::hex
+        << reinterpret_cast<std::uintptr_t>(window) << std::dec
+        << " dirty_region=" << (dirty ? 1 : 0);
+    if (SUCCEEDED(temporal_present_rt_desc_hr)) {
+      out << " rt_width=" << temporal_present_rt_desc.Width
+          << " rt_height=" << temporal_present_rt_desc.Height
+          << " rt_format="
+          << static_cast<unsigned>(temporal_present_rt_desc.Format)
+          << " rt_usage=0x" << std::hex << temporal_present_rt_desc.Usage
+          << std::dec
+          << " rt_pool=" << static_cast<unsigned>(temporal_present_rt_desc.Pool)
+          << " rt_multisample="
+          << static_cast<unsigned>(temporal_present_rt_desc.MultiSampleType);
+    }
+    if (SUCCEEDED(temporal_present_backbuffer_desc_hr)) {
+      out << " backbuffer_width=" << temporal_present_backbuffer_desc.Width
+          << " backbuffer_height=" << temporal_present_backbuffer_desc.Height
+          << " backbuffer_format="
+          << static_cast<unsigned>(temporal_present_backbuffer_desc.Format)
+          << " backbuffer_usage=0x" << std::hex
+          << temporal_present_backbuffer_desc.Usage << std::dec
+          << " backbuffer_pool="
+          << static_cast<unsigned>(temporal_present_backbuffer_desc.Pool)
+          << " backbuffer_multisample="
+          << static_cast<unsigned>(
+                 temporal_present_backbuffer_desc.MultiSampleType);
+    }
+    append_line(out.str());
+  }
   if (present_slot_ordinal > 0 && present_slot_ordinal <= 4) {
     std::ostringstream out;
     out << "event=device_vb_slot_trace boundary=present_after ordinal="
@@ -4071,6 +4354,7 @@ HRESULT STDMETHODCALLTYPE hook_present(IDirect3DDevice9 *device,
     auto it = g_devices.find(device);
     if (it != g_devices.end()) {
       DeviceState &state = it->second;
+      state.temporal_provenance.on_present_result(true);
       ++state.present_count;
       if ((state.end_scene_count == 0 &&
            (state.present_count <= 4 || (state.present_count % 30u) == 0u)) ||
@@ -4150,14 +4434,22 @@ rehook_observer_device_hooks_after_state_block(IDirect3DDevice9 *device) {
                      hook_set_stream_source, g_real_set_stream_source) &&
         patch_vtable(device, kDeviceSetIndicesIndex, hook_set_indices,
                      g_real_set_indices) &&
+        patch_vtable(device, kDeviceCreateVertexDeclarationIndex,
+                     hook_create_vertex_declaration,
+                     g_real_create_vertex_declaration) &&
+        hooked;
+  }
+  if (resource_census_requested() || trace_exceptions_requested() ||
+      managed_texture_fallback_requested() ||
+      managed_index_buffer_fallback_requested() ||
+      managed_semantic_adaptation_requested() ||
+      temporal_provenance_requested()) {
+    hooked =
         patch_vtable(device, kDeviceDrawPrimitiveIndex, hook_draw_primitive,
                      g_real_draw_primitive) &&
         patch_vtable(device, kDeviceDrawIndexedPrimitiveIndex,
                      hook_draw_indexed_primitive,
                      g_real_draw_indexed_primitive) &&
-        patch_vtable(device, kDeviceCreateVertexDeclarationIndex,
-                     hook_create_vertex_declaration,
-                     g_real_create_vertex_declaration) &&
         hooked;
   }
 
@@ -4225,12 +4517,6 @@ HRESULT STDMETHODCALLTYPE hook_create_device(
         g_real_set_stream_source);
     set_indices_trace_hooked = patch_vtable(
         *device, kDeviceSetIndicesIndex, hook_set_indices, g_real_set_indices);
-    draw_primitive_trace_hooked = patch_vtable(
-        *device, kDeviceDrawPrimitiveIndex, hook_draw_primitive,
-        g_real_draw_primitive);
-    draw_indexed_primitive_trace_hooked = patch_vtable(
-        *device, kDeviceDrawIndexedPrimitiveIndex, hook_draw_indexed_primitive,
-        g_real_draw_indexed_primitive);
     vertex_declaration_trace_hooked = patch_vtable(
         *device, kDeviceCreateVertexDeclarationIndex,
         hook_create_vertex_declaration, g_real_create_vertex_declaration);
@@ -4240,6 +4526,18 @@ HRESULT STDMETHODCALLTYPE hook_create_device(
           g_real_begin_state_block);
     if (canonical_vertex_buffer_hook_requested())
       canonical_vertex_buffer_hooked = install_canonical_vertex_buffer_hook();
+  }
+  if (resource_census_requested() || trace_exceptions_requested() ||
+      managed_texture_fallback_requested() ||
+      managed_index_buffer_fallback_requested() ||
+      managed_semantic_adaptation_requested() ||
+      temporal_provenance_requested()) {
+    draw_primitive_trace_hooked = patch_vtable(
+        *device, kDeviceDrawPrimitiveIndex, hook_draw_primitive,
+        g_real_draw_primitive);
+    draw_indexed_primitive_trace_hooked = patch_vtable(
+        *device, kDeviceDrawIndexedPrimitiveIndex, hook_draw_indexed_primitive,
+        g_real_draw_indexed_primitive);
   }
 
   IDirect3DDevice9Ex *device_ex = nullptr;
@@ -4275,10 +4573,12 @@ HRESULT STDMETHODCALLTYPE hook_create_device(
       << reinterpret_cast<std::uintptr_t>(&hook_create_vertex_buffer)
       << " original_vb=0x"
       << reinterpret_cast<std::uintptr_t>(g_real_create_vertex_buffer)
-      << std::dec;
+      << std::dec
+      << " temporal_provenance=" << temporal_provenance_requested();
   if (resource_census_requested() || trace_exceptions_requested() ||
       managed_texture_fallback_requested() ||
-      managed_semantic_adaptation_requested())
+      managed_semantic_adaptation_requested() ||
+      temporal_provenance_requested())
     out << " texture_trace_hook=" << texture_trace_hooked
         << " volume_texture_trace_hook=" << volume_texture_trace_hooked
         << " cube_texture_trace_hook=" << cube_texture_trace_hooked

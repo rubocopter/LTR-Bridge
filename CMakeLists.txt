@@ -16,6 +16,12 @@ target_compile_features(ltr_d3d9_real_bridge_completion_test PRIVATE cxx_std_20)
 add_test(NAME ltr_d3d9_real_bridge_completion_test
     COMMAND ltr_d3d9_real_bridge_completion_test)
 
+add_executable(ltr_temporal_frame_test
+    tests/temporal_frame_test.cpp)
+target_compile_features(ltr_temporal_frame_test PRIVATE cxx_std_20)
+add_test(NAME ltr_temporal_frame_test
+    COMMAND ltr_temporal_frame_test)
+
 find_program(LTR_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
 if(LTR_POWERSHELL_EXECUTABLE)
     add_test(NAME ltr_d3d9_real_observer_validation_test
@@ -37,6 +43,12 @@ if(WIN32)
     target_compile_definitions(ltr_d3d9_real_observer_managed_compat_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME ltr_d3d9_real_observer_managed_compat_test
         COMMAND ltr_d3d9_real_observer_managed_compat_test)
+
+    add_executable(ltr_d3d9_real_observer_temporal_provenance_test
+        tests/d3d9_real_observer_temporal_provenance_test.cpp)
+    target_compile_features(ltr_d3d9_real_observer_temporal_provenance_test PRIVATE cxx_std_20)
+    add_test(NAME ltr_d3d9_real_observer_temporal_provenance_test
+        COMMAND ltr_d3d9_real_observer_temporal_provenance_test)
 endif()
 
 option(LTR_ENABLE_X86_X64_BRIDGE_PROBE "Build one side of the D3D11 x86 -> D3D12 x64 transport probe" OFF)
@@ -168,7 +180,9 @@ if(LTR_ENABLE_D3D9_REAL_OBSERVER_PROBE)
         DEPENDS src/d3d9_real_observer_probe/forwarder.def
         VERBATIM)
     add_custom_target(ltr_d3d9_real_observer_probe ALL
-        DEPENDS "${LTR_D3D9_REAL_OBSERVER_FORWARDER}")
+        DEPENDS
+            ltr_d3d9_real_observer_bootstrap
+            "${LTR_D3D9_REAL_OBSERVER_FORWARDER}")
 endif()
 
 option(LTR_ENABLE_D3D9_REAL_BRIDGE_PROBE "Build the Win32 synthetic producer for the real-frame multiframe bridge contract" OFF)

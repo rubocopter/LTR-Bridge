@@ -1,6 +1,164 @@
 # Codex handoff
 
-Updated: 2026-10-01.
+Updated: 2026-10-06.
+
+## Latest checkpoint — post-format continuation; temporal provenance prepared
+
+**Implemented / host-tested (2026-10-06):** the bounded temporal-provenance
+instrumentation is now part of the recovered working tree. The opt-in
+`LTR_D3D9_TEMPORAL_PROVENANCE=1` draw hooks sample RT0, bound depth, viewport,
+shader identities and VS constants under explicit source-frame/view/resource-
+generation identity. `source_frame_index` advances only after successful real
+`Present`; successful `Reset` restarts generation-local sampling while keeping
+source frame monotonic. The x64 Release suite passed 9/9 in the fresh
+`build-root/provenance-full-x64-2026-10-06` configuration. A fresh harness
+self-test reports `device_driver=hardware`, NVIDIA vendor `0x10de`, device
+`0x2782`, feature level `0xb000`; this adapter provenance applies only to that
+fresh run.
+
+**Implemented / host-tested Present-boundary provenance (2026-10-06):** the
+same opt-in mode now records one `temporal_provenance_present` event per source
+frame for the first four frames of each resource generation. The event samples
+RT0 and swapchain backbuffer identity/descriptors immediately before the real
+`Present`, preserves the draw-side `(device_id, source_frame_index, view_id,
+resource_generation)` key, records source/destination rects, and appends the
+actual Present HRESULT before successful-Present state advancement occurs. A
+failed Present does not advance source identity and duplicate attempts for the
+same source frame are not logged, keeping the observation bounded. This closes
+the offline instrumentation gap needed to compare draw RT identities with the
+final Present boundary; it does not prove an offscreen copy, image contents, or
+scene/HUD semantics.
+
+Fresh Win32 verification used
+`build-root/provenance-present-x86-2026-10-06`, MSVC `19.44.35229.0`, Windows
+SDK `10.0.26100.0`, and Release configuration. The aggregate observer target
+built both artifacts and the focused provenance test passed 1/1 with
+`temporal_provenance_checks=50 RESULT PASS`. SHA-256:
+`ltr_d3d9_real_observer_bootstrap.dll =
+5F2631A1FB06B309E3020F625D226CEBA2AB1AA8F97EBC22B13719456ABA2591` and
+`d3dx9_29.dll =
+5742727B5A02ABE2C1EB5D962BB5A0DB57928D5A7F82D13E99A9309562FEBF63`.
+This is **host-tested** compile/contract evidence only; no game process was
+started.
+
+**Implemented / host-tested CMake reproducibility fix (2026-10-06):** a clean
+Win32 reproduction showed `ltr_d3d9_real_observer_probe` previously generated
+only the `d3dx9_29.dll` forwarder. The aggregate target now also depends on
+`ltr_d3d9_real_observer_bootstrap`. A separate clean Win32 build through the
+aggregate target in `build-root/provenance-aggregate-x86-2026-10-06` compiled
+`client.cpp` and `proxy.cpp` and produced both the bootstrap DLL and forwarder.
+This is compile evidence, not game runtime support.
+
+**Experiment-pending:** the live provenance procedure and explicit PASS/partial/
+FAIL criteria are frozen in
+[REAL_TEMPORAL_PROVENANCE_EXPERIMENT.md](REAL_TEMPORAL_PROVENANCE_EXPERIMENT.md).
+The current Steam CoJ installation was rechecked after the format and remains
+externally staged by `call_of_juarez_vr`; its `CoJ.exe` hash is
+`C8B8BB82FCB3D6599C5F77B1BB9CB3444CBB3A360461DAD43AD808B49AD28DC9`, while
+the documented original is
+`5EC9215E1BBDA4BE0662BEE4DF696DF35577196792CD76570DFF49F18BF109EE`.
+`ChromeEngine3.dll` is
+`DB69BC35919FE57187766771A2452ACA11090474F6D63DF1A85A80EDED131EC8`.
+No independent vanilla copy was found in the checked Steam-library candidates,
+so no LTR game probe, SteamVR run or headset test was started. A separately
+verified vanilla path is required before the live experiment.
+
+## Post-format audit baseline
+
+**Verified / observed (2026-10-06):** the recovered checkout is now
+`E:/Proyectos/LTR-Bridge`, at `cb9d1f682bb505b0e59135291ec16d40b33c4a3f` on
+`main`; a read-only remote query confirmed the same main SHA. Eight tracked
+files already had local changes, including the temporal identity checkpoint
+below, and `tests/temporal_frame_test.cpp` was untracked despite being required
+by CMake. Preserve both tracked and untracked work. The new Windows user SID
+differs from the repository owner; audit commands used per-command
+`git -c safe.directory=E:/Proyectos/LTR-Bridge`, without global changes.
+Old CMake caches still reference `E:/LTR_bridge`; do not reuse them as current
+configurations or erase historical evidence/SDKs indiscriminately.
+
+**Implemented / host-tested on the new installation:** fresh VS 2022 Release
+x64/x86 builds completed with MSVC `19.44.35229.0` and Windows SDK
+`10.0.26100.0`. Root x64 CTest passed 8/8; selected x86 contract tests passed
+6/6. The synthetic two-slot x86/D3D11 -> x64/D3D12 path completed 12/12 at
+64x64 with ready/done=12, 12 consumer copies and zero first-pixel mismatches.
+XeSS `v3.0.2` / `8fe81bdbbaf00b3c1b733fd0d830c333dc84e6f0` passed its
+controlled 256x144, 12-frame Native AA probe on RTX 4070 Ti. The inventoried
+Windows driver is `32.0.16.1714`. The D3D11 harness report does not distinguish
+hardware from its permitted WARP fallback; its PASS is host evidence without
+confirmed adapter provenance. OpenXR only compiled. No new visual, performance,
+game, reset/device-loss or headset claim follows.
+
+**Verified limitation of historical content claims:** the real observer sets
+`validate_synthetic_pattern=false` (`proxy.cpp:1735`), while the sink prints
+`validation_mismatches=0` even when comparisons are disabled. Therefore the
+historical real reset completion/copy/fence result must not be promoted to
+sampled-content correctness from that field alone. The fresh synthetic run
+does enable comparison, scoped to one pixel per frame. Some older TEMP logs
+and clips cited below no longer exist at their recorded paths; surviving
+bundles are partial, and the old sections remain historical snapshots.
+
+**Observed real-game blocker:** the installed Steam CoJ folder contains active
+CoJ VR staging, run `20261005T225210Z-feebcc6e3e81`, with a staged executable
+hash `C8B8BB82FCB3D6599C5F77B1BB9CB3444CBB3A360461DAD43AD808B49AD28DC9`.
+It is not a clean LTR baseline. The stage manifest records the original hash
+`5EC9215E1BBDA4BE0662BEE4DF696DF35577196792CD76570DFF49F18BF109EE`.
+No staging/game/mod files were changed and no game or SteamVR was launched.
+Use an independently verified vanilla target for future LTR live experiments;
+do not follow old mod preparation/finish instructions from this handoff.
+
+**Experiment-pending:** minimal validation/preconditions for temporal inputs
+and ownership, focused negative coverage and trustworthy fresh self-test
+reports, then real scene color/readable depth/effective camera/jitter/MV joined
+by frame/view/generation. Existing identity/continuity predicates are not
+complete validity checks. The later gate remains real XeSS Native AA 1:1 and
+safe output return, without a production injector or public ABI.
+
+Audit: [AUDIT_2026-10-06.md](AUDIT_2026-10-06.md).
+Prepared continuation prompt:
+[CONTINUE_AFTER_FORMAT_2026-10-06.md](CONTINUE_AFTER_FORMAT_2026-10-06.md).
+Fresh logs/snapshot: ignored `build-root/audit-post-format-2026-10-06/`.
+That audit sub-phase changed documentation only and intentionally stopped after
+the audit and prompt. The later continuation added the internal temporal
+contract checks and bounded real-renderer provenance instrumentation described
+above; those later changes are separate from the audit-only checkpoint.
+
+## Latest LTR checkpoint — temporal identity + current Feeder evidence
+
+**Observed upstream:** `jlrouzies-fr/DLSS5-Feeder` main was inspected at
+`7b41f5f3e57c260dec6012695c258e876fdfe6c5` (2026-09-29,
+`1.18.0-beta.1 into main (#140)`). Its protocol v11 keeps frame payloads in
+shared GPU resources while CPU IPC carries handles/fence coordination. The
+bundled legacy adapter documents a D3D9Ex/D3D10 -> private D3D11 relay ->
+D3D12 backend boundary and reverse output path; `DLSS5_Feed.fx` also provides
+an experimental camera/depth/optical-flow reconstructed-MV baseline. These are
+useful architecture and diagnostic references. Feeder's public D3D9 path still
+routes through dgVoodoo2 and does not validate native Call of Juarez temporal
+extraction. DLSS5-Swapper remains deployment/ecosystem evidence rather than the
+temporal-data solution.
+
+**Implemented / host-tested:** the internal temporal description now separates
+source `frame_index` from `transport_index` and carries view/resource/history/
+camera/config generations, reset reason, valid color/depth/motion subrects,
+depth convention/sample/near-far metadata, output ownership and frame delta.
+`CanReuseHistory` rejects omitted source frames and generation/extent changes
+without confusing them with transport gaps. `SameTemporalFrameIdentity`
+provides the first explicit stale-input join rule for independently produced
+inputs claiming the same renderer frame; it ignores transport serial and rejects
+frame/view/resource/history/camera/config/reset mismatches. The focused Release
+test now uses active checks rather than `assert`, so `NDEBUG` cannot erase the
+test. The controlled D3D11 producer emits the richer metadata and its deterministic
+self-test passes.
+
+**Experiment-pending:** no real CoJ frame yet supplies coherent scene color,
+shader-usable depth, actual camera/projection constants, validated motion vectors
+and renderer jitter under this identity model. The next vertical gate is to
+identify/capture those real inputs, pair every asynchronous input by semantic
+frame/view/generation identity, reject stale or ownership-mismatched data and
+define deliberate history behavior for dropped game frames. After that, feed the
+real `TemporalFrame` through the existing x86 -> x64 path into XeSS 3.0.2 Native
+AA at 1:1 and return a correctly identified result to the game with safe reuse
+and fail-open original presentation. No production injector or public ABI is
+justified yet.
 
 ## Latest checkpoint — native menu mouse events and continuous body yaw
 
@@ -490,7 +648,7 @@ The repository is still in research/probe phase. There is no production injector
 
 **Host-tested unrelated-engine control (2026-09-30):** Steam F.E.A.R. `FEAR.exe` version `1.08.282.0`, SHA-256 `D5EBC38A4F12B772C9112A2811C290ADB6C5052D3BC2F817302D38CF55BB2CBE`, was exercised through a throwaway `d3dx9_27.dll` bootstrap that patches only the executable IAT entry for `Direct3DCreate9`. No `CreateDevice`, device-vtable, relay, D3D11, D3D12, Present, Reset or Release hooks were installed. In baseline mode the hook called the real `Direct3DCreate9`; the game reached its `F.E.A.R.` window and remained alive for the 12-second observation window. Under otherwise identical conditions the hook instead returned a `Direct3DCreate9Ex` object through `IDirect3D9 *`; the log recorded `promote_returned_IDirect3D9Ex_as_IDirect3D9`, and the game again reached its normal window and remained alive for the full 12 seconds. The temporary DLLs, mode flags and log were removed afterward and no F.E.A.R. process remained. This disproves the broad hypothesis that the base-interface promotion mechanism is inherently unstable on this host. The next Call of Juarez work should therefore isolate which Chrome Engine / game assumption differs from F.E.A.R. before reconnecting the multiframe bridge.
 
-The clean Steam Call of Juarez build has now moved the roadmap past observation and one-shot cross-bitness color transport. Real-game observation is host-tested: the game uses the classic D3D9 API, reaches `Present`, and exposes color, depth, transforms and one swapchain there. True classic sharing fails in both tested directions, while the semantic MANAGED adaptation above keeps the promoted D3D9Ex route alive through the bounded 120-Present startup window and preserves every CPU-write pattern observed there. A real reset also preserves the sampled adapted texture contents, including a generation-1 texture that remains actively used in generation 2. The exact two-slot observer/client/x64 topology has now run through the real reset: generation 1 cancels under forced stall and generation 2 completes 12/12 with ready/done=12, 12 D3D12 consumer copies and zero sampled mismatches. Device loss, broader non-lockable-resource semantics, visual correctness, sustained runtime and reconstruction remain pending.
+The clean Steam Call of Juarez build has now moved the roadmap past observation and one-shot cross-bitness color transport. Real-game observation is host-tested: the game uses the classic D3D9 API, reaches `Present`, and exposes color, depth, transforms and one swapchain there. True classic sharing fails in both tested directions, while the semantic MANAGED adaptation above keeps the promoted D3D9Ex route alive through the bounded 120-Present startup window and preserves every CPU-write pattern observed there. A real reset also preserves the sampled adapted texture contents, including a generation-1 texture that remains actively used in generation 2. The exact two-slot observer/client/x64 topology has now run through the real reset: generation 1 cancels under forced stall and generation 2 completes 12/12 with ready/done=12 and 12 D3D12 consumer copies. That real observer run had synthetic pixel comparison disabled (`validation_samples=0`), so its `validation_mismatches=0` field records zero comparisons rather than sampled content correctness. Device loss, broader non-lockable-resource semantics, real content correctness, visual correctness, sustained runtime and reconstruction remain pending.
 
 **Historical failed multiframe attempt / superseded design:** the first real-game multiframe attempt initialized a two-slot, 12-frame bridge and launched the persistent x64 sink, but ended at `stage=completion RESULT FAIL`. Offline reproduction resolved the transport-design uncertainty behind that attempt. With D3D11-owned `SHARED_NTHANDLE | SHARED_KEYEDMUTEX` slots, ready/done fence values could reach 12 while x64 D3D12 content validation still read zero for all 12 frames, including a local-texture `CopyResource` source path. That ownership design has been removed. The replacement uses the already-proven general-bridge direction: x64 D3D12 creates two shared BGRA8 slots and `done`, duplicates those handles directly into x86, x86 D3D11 opens them and creates named `ready`, and slot reuse waits on `done` plus child liveness. The client implementation is shared by the synthetic producer and real observer, so the validated protocol code no longer has a second game-only copy. The observer owns two D3D9Ex/D3D11 source relays, one per transport slot. It completes each D3D9 write before the D3D11 transport copy; subsequent reuse of that same relay is allowed only once the client's matching `done` requirement passes. Because D3D12 signals `done` only after waiting for `ready`, and D3D11 signals `ready` after its source copy, the former D3D11 event-query/CPU spin used solely to protect source reuse is redundant and has been removed. It drops capture work under backpressure, terminates the child and releases resources before `Reset`, creates a new generation lazily after successful reset, and disables itself without failing `Present` on transport errors. The completion record reports mean CPU wall time for the D3D9 synchronization region and the now non-blocking D3D11 submit region. This replacement path is now live-tested through the real reset-generation lifecycle described above; the historical failed attempt remains negative evidence only.
 
@@ -507,7 +665,7 @@ Current local evidence is concentrated in eight implemented areas:
 5. **Real Call of Juarez D3D9 observation + historical one-shot x86/x64 compatibility relay — live-tested through bounded D3D9Ex startup/reset semantics.** The clean PE32 Steam game loads system D3D9 and resolves `Direct3DCreate9`. A temporary `d3dx9_29.dll` dependency forwarder/bootstrap installs the observer without modifying the game binaries and is removed after each run. In baseline mode the game creates a true classic-D3D9 device. Earlier opt-in promotion runs backed the same legacy API call with `Direct3DCreate9Ex`; the game's ordinary `CreateDevice` returned an Ex-capable device and reached the real `Present` boundary. A one-shot `2560x1440` A8R8G8B8 relay test succeeded through D3D9Ex `StretchRect`, event-query completion and x86 D3D11 `OpenSharedResource`; the x86 side then copied to an NT-shared BGRA8 resource and a separate x64 D3D12 helper opened/read back it with five matching samples and zero mismatches. D24X8 depth, transforms and one swapchain were visible. Fresh 2026-09-30 tracing established the broader MANAGED pattern rather than five isolated sizes: usage-0 MANAGED 2D/cube textures can be retried as `DEFAULT|DYNAMIC`, while the observed MANAGED WRITEONLY VB/IB profiles can be retried as `DEFAULT` with usage preserved. The bounded semantic adapter live run adapts 9/9 observed allocations, services 118 successful CPU-write lock traces, survives 39 `BeginStateBlock` refreshes and reaches 118 EndScenes / 120 Presents with zero exception markers. A subsequent real reset keeps all nine tracked adapted resources alive; four directly hashable textures preserve identical contents and a generation-1 texture remains actively bound in generation 2. This is scoped evidence for the tested build/host, not generic managed-resource emulation or device-loss equivalence.
 6. **dgVoodoo2 2.87.5 comparison and D3D12 addon boundary — host-tested on the current machine.** The native D3D9Ex shared-relay architecture does not traverse dgVoodoo unchanged: R10 target creation is rejected and BGRA8 reaches rendering but shared-relay creation is rejected with `D3DERR_INVALIDCALL`. A separate addon probe built against the external official API package succeeds with the D3D12 backend. Five repeated `d3d12_fl11_0` runs observe API version `0x287`, a non-null D3D12 device, two `640x360 -> 1280x720` swapchain generations and 12/12 matched presentation callbacks with non-null source/destination resources. The callback exposes translated presentation textures; original D3D9 depth/world/MV visibility is not established there.
 7. **D3D10.1 -> private D3D11 relay — host-tested on the current machine.** The x86 probe uses a D3D10.1 device at feature level 10.0, copies local R10 color into a legacy shared R10 texture, waits on a D3D10 event query and opens that resource from a same-adapter private D3D11 device. Five standalone `640x360 -> 1280x720` runs pass with zero mismatches. The integrated x86 -> x64 route reuses the existing D3D11 R10-to-RGBA8 conversion and D3D12 host; five 24-frame runs pass with zero mismatches. Bridge-run D3D10 copy+event means were `0.1832–0.1902 ms` and D3D11 conversion means `4.9053–5.2747 us`. Keyed-mutex resource creation returns `E_INVALIDARG` on this RTX 4070 Ti, so event-query synchronization is the proven current-host route. Depth/MV/SM4 temporal integration remains pending.
-8. **Real-path two-slot transport contract — host-tested offline and live-tested for the real reset lifecycle.** `src/d3d9_real_bridge_probe/client.*` owns the common x86 client used by both the synthetic producer and observer. The x64 side creates two shared BGRA8 resources and `done`, duplicates their NT handles into x86 and sends a versioned bootstrap record through a pipe; x86 opens them with D3D11, owns the named `ready` fence, performs `CopyResource`, and gates slot reuse on both `done` and child liveness. After the extraction, five `64x64` 12-frame runs with a forced 50 ms consumer stall completed with zero mismatches, and three additional `2560x1440` runs did the same. The observer join uses two reusable D3D9 relays tied to those slots, preserving the D3D9 event-query handoff but using the existing `ready -> done -> reuse` ordering instead of a second D3D11 CPU wait. The synthetic source-reuse variant passed another 3/3 `64x64` and 2/2 `2560x1440` runs with zero mismatches. In the real game, a forced-stall generation 1 was cancelled at reset, then generation 2 at `1920x1080` completed 12/12 with matching ready/done fence values, 12 D3D12 consumer copies, zero sampled mismatches and no capture failures. The earlier D3D11-owned persistent-slot design is retained only as documented negative evidence.
+8. **Real-path two-slot transport contract — host-tested offline and live-tested for the real reset lifecycle.** `src/d3d9_real_bridge_probe/client.*` owns the common x86 client used by both the synthetic producer and observer. The x64 side creates two shared BGRA8 resources and `done`, duplicates their NT handles into x86 and sends a versioned bootstrap record through a pipe; x86 opens them with D3D11, owns the named `ready` fence, performs `CopyResource`, and gates slot reuse on both `done` and child liveness. After the extraction, five `64x64` 12-frame runs with a forced 50 ms consumer stall completed with zero mismatches, and three additional `2560x1440` runs did the same. The observer join uses two reusable D3D9 relays tied to those slots, preserving the D3D9 event-query handoff but using the existing `ready -> done -> reuse` ordering instead of a second D3D11 CPU wait. The synthetic source-reuse variant passed another 3/3 `64x64` and 2/2 `2560x1440` runs with zero mismatches. In the real game, a forced-stall generation 1 was cancelled at reset, then generation 2 at `1920x1080` completed 12/12 with matching ready/done fence values, 12 D3D12 consumer copies and no capture failures. Synthetic validation was disabled there (`validation_samples=0`), so `validation_mismatches=0` is not content-validation evidence. The earlier D3D11-owned persistent-slot design is retained only as documented negative evidence.
 
 The separate OpenXR x64 bootstrap is **host-tested** for loader/instance/runtime negotiation. SteamVR exposes both D3D11 and D3D12 enable extensions, but the current runs returned `XR_ERROR_FORM_FACTOR_UNAVAILABLE`; no HMD system, graphics session, swapchain, frame loop, presentation or physical-headset claim exists yet.
 

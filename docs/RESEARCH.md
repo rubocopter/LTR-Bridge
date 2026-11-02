@@ -1,4 +1,4 @@
-# Research snapshot — 2026-09-17
+# Research snapshot — updated 2026-10-01
 
 This document records the first two research passes. It distinguishes upstream behavior from conclusions that still need local experiments.
 
@@ -11,7 +11,7 @@ This document records the first two research passes. It distinguishes upstream b
 
 ## DLSS5-Feeder
 
-Research target: `jlrouzies-fr/DLSS5-Feeder`, current stable release observed as `v0.15.1`, short commit `3f62485`, released 2026-09-09. The newest prerelease observed is `v1.16.0-beta.1`, short commit `55c5bca`, released 2026-09-10. Stable conclusions below remain based on the documented 0.15.x architecture unless stated otherwise.
+Research target: `jlrouzies-fr/DLSS5-Feeder`. The current inspected main snapshot is commit `7b41f5f3e57c260dec6012695c258e876fdfe6c5`, committed 2026-09-29 with message `1.18.0-beta.1 into main (#140)`. Earlier release snapshots remain useful historical evidence, but the conclusions below now use this inspected commit where stated.
 
 ### Cross-bitness path
 
@@ -21,7 +21,15 @@ Research target: `jlrouzies-fr/DLSS5-Feeder`, current stable release observed as
 
 **Observed upstream:** frame pixels do not need a CPU round-trip. The Feeder design keeps frame payloads in GPU resources; CPU IPC carries coordination and handles, while GPU copies may still occur around the shared resources. This is resource sharing, not automatically zero-copy.
 
-**Observed upstream, current release line:** the x86 add-on and x64 helper use IPC protocol v9 and must be deployed as a matching pair. The newer beta also adds more host/build-generation diagnostics and D3D11 synchronization fallbacks. This strengthens the requirement that LTR Bridge version its control protocol and make host/client build identity observable from the first bridge prototype.
+**Observed upstream, inspected 2026-09-29 main:** `src/feed_ipc.h` uses IPC protocol v11. `FeedBuild` carries work/target extents, formats, depth inversion, MV scale, client/ownership flags and shared Color/Output/Depth/MV handles. `FeedFrameMsg` carries the per-frame fence serial, reset and jitter plus experimental controls. The matching x86/x64 pair still treats CPU IPC as coordination while frame payloads remain in shared GPU resources. This strongly matches LTR Bridge's separable transport/backend shape, while exposing less explicit frame/view/config/history identity than LTR intends to require.
+
+### Legacy relay boundary and motion-vector baseline
+
+**Observed upstream:** the bundled `external/deepfried/v1.4.8-alpha/LEGACY-API-ADAPTER.md` describes a D3D9Ex/D3D10 -> legacy shared Color/Depth/Motion/Output -> private D3D11 relay/conversion -> NT shared textures/fence -> D3D12 backend path, followed by the reverse path for output. It explicitly labels this as an implementation boundary rather than proof that those legacy backends work. It also calls out packing D3D9Ex depth/motion into shareable formats such as RGBA16F and converting on D3D11 to backend-friendly formats such as R32_FLOAT/R16G16_FLOAT.
+
+**Observed upstream:** the public `DLSS5_Feed.fx` path still does not attach to D3D9 directly; its D3D9 branch is a stub that tells users to place dgVoodoo2 in front. Therefore Feeder is useful evidence for the relay architecture, but it is not proof of native Call of Juarez x86 D3D9Ex temporal extraction.
+
+**Observed upstream:** the shader's experimental geometry-vector mode fits camera motion from optical flow plus depth, derives static-world motion from that model and falls back toward provider flow for likely moving objects. Its validation also uses static-hypothesis, luma, depth and temporal-consistency tests. This is a useful reconstructed-MV baseline and diagnostic reference, not a substitute for renderer-native transforms/MVs or explicit coverage metadata.
 
 ### Resource ownership direction
 
@@ -59,7 +67,7 @@ The upstream explanation identifies three direct D3D10 limitations for its helpe
 
 It demonstrates that a practical user-facing tool needs API detection, component version pinning, conflict handling, and reversible installation. It does not establish the internal architecture LTR Bridge should use.
 
-Current release notes observed around 2026-09 list Feeder 0.15.1, ReShade 6.8.0 and dgVoodoo2 2.87.4 as deployed components.
+**Observed upstream, 2026-10-01:** the current Swapper README advertises x86/x64 deployment across D3D11/D3D12 and legacy D3D9/D3D8 routes through dgVoodoo2. That breadth is deployment/ecosystem evidence; it does not establish a direct native-D3D9 temporal provider or remove LTR's real-input validation gate.
 
 ## OptiScaler
 
